@@ -1,0 +1,14 @@
+---
+
+name: Deploy vutils-nox
+
+on:
+  release:
+    types:
+      - published
+
+jobs:
+  call-deploy:
+    uses: ./.github/workflows/deploy-workflow.yml
+    permissions:
+      id-token: write

@@ -1,0 +1,75 @@
+#
+# File:    ./pyproject.toml
+# Author:  Jiří Kučera <sanczes AT gmail.com>
+# Date:    2025-09-28 22:47:38 +0200
+# Project: vutils-nox: Shared Nox configuration for vutils
+# Brief:   Project configuration
+#
+# SPDX-License-Identifier: MIT
+#
+
+[build-system]
+requires = ["setuptools >=77.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vutils-nox"
+authors = [
+    {name = "Jiří Kučera", email = "sanczes@gmail.com"},
+]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Build Tools",
+]
+license = "MIT"
+license-files = ["LICENSE"]
+description = "Shared Nox configuration for vutils"
+readme = "README.md"
+keywords = ["nox"]
+dependencies = [
+    "nox",
+    "mypy",
+    "packaging",
+    "pkginfo",
+    "pydantic",
+    "pyproject-metadata",
+    "setuptools",
+    "tomli-w",
+]
+requires-python = ">=3.14"
+dynamic = ["version"]
+
+[project.optional-dependencies]
+flake8-dummy = [
+    "vutils-testing",
+]
+mypy-extra = [
+    "types-setuptools",
+]
+
+[project.urls]
+"Home Page" = "https://github.com/i386x/vutils-nox"
+Issues = "https://github.com/i386x/vutils-nox/issues"
+Source = "https://github.com/i386x/vutils-nox"
+
+[tool.setuptools.dynamic]
+version = {attr = "vutils.nox.version.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.vutils-nox.sessions.pylint]
+init-hook = "import mypy; import mypy.plugin"
+extension-pkg-allow-list = ["mypy"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["nox"]
+
+[tool.ruff.lint.pyflakes]
+allowed-unused-imports = ["vutils.nox.sessions"]

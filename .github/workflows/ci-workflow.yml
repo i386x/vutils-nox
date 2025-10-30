@@ -1,0 +1,96 @@
+---
+
+name: Reusable CI workflow
+
+on:
+  workflow_call:
+    secrets:
+      token:
+        description: A token provided by GitHub
+        required: true
+
+jobs:
+  define-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      pythons: ${{ steps.pythons.outputs.pythons }}
+
+    steps:
+      - name: Checkout the project
+        uses: actions/checkout@v7
+
+      - name: Setup Python 3.x
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if test "${{ github.event.repository.name }}" = "vutils-nox"; then
+            pip install -e .
+          else
+            pip install vutils-nox
+          fi
+
+      - name: Generate the CI matrix
+        id: pythons
+        run: |
+          python -c 'from vutils.nox.project import ghci_matrix as m; print(m("pythons"))' >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: define-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.define-matrix.outputs.pythons) }}
+
+    steps:
+      - name: Checkout the project
+        uses: actions/checkout@v7
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          if test "${{ github.event.repository.name }}" = "vutils-nox"; then
+            pip install -e .
+          else
+            pip install nox
+          fi
+
+      - name: Run nox
+        env:
+          GITHUB_TOKEN: ${{ secrets.token }}
+          COVERALLS_SERVICE_NAME: github
+          COVERALLS_FLAG_NAME: ${{ matrix.python-version }}
+          COVERALLS_PARALLEL: true
+        run: |
+          nox
+
+  finish:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Python 3.x
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install coveralls
+
+      - name: Notify coveralls.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.token }}
+          COVERALLS_SERVICE_NAME: github
+        run: |
+          coveralls --finish

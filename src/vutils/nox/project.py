@@ -1,0 +1,629 @@
+#
+# File:    ./src/vutils/nox/project.py
+# Author:  Jiří Kučera <sanczes AT gmail.com>
+# Date:    2026-06-17 01:47:07 +0200
+# Project: vutils-nox: Shared Nox configuration for vutils
+#
+# SPDX-License-Identifier: MIT
+#
+"""Python project helpers."""
+
+import functools
+import os
+import pathlib
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Annotated, Self
+
+from nox.project import load_toml
+from nox.sessions import Session
+from packaging.requirements import Requirement
+from packaging.version import Version
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    model_validator,
+)
+from pyproject_metadata import StandardMetadata
+
+from vutils.nox.mypy.typing import fix_decorator_type
+from vutils.nox.utils import (
+    EV_PYTHONPATH,
+    IMPORT_ERROR_RE,
+    resolve_path,
+    run_script,
+    setenv,
+)
+
+#: File names
+PYPROJECT_TOML = "pyproject.toml"
+
+#: Project metadata fields names
+ATTR_KEY = "attr"
+AUTHOR_EMAIL_KEY = "author_email"
+AUTHOR_KEY = "author"
+DESCRIPTION_KEY = "description"
+DYNAMIC_KEY = "dynamic"
+FILE_KEY = "file"
+LICENSE_FILE_KEY = "license_file"
+MAINTAINER_EMAIL_KEY = "maintainer_email"
+MAINTAINER_KEY = "maintainer"
+NAME_KEY = "name"
+VERSION_KEY = "version"
+
+
+class PyProjectPersonModel(BaseModel):
+    """The person item data model."""
+
+    model_config = ConfigDict(strict=True)
+
+    name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ] = "Unknown"
+    email: (
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+        | None
+    ) = None
+
+
+class PyProjectProject(BaseModel):
+    """The ``[project]`` section data model."""
+
+    model_config = ConfigDict(strict=True)
+
+    name: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ]
+    version: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ] = "0.0.0"
+    authors: Sequence[PyProjectPersonModel]
+    classifiers: Sequence[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    ]
+    license: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ]
+    license_files: Annotated[
+        Sequence[
+            Annotated[
+                str, StringConstraints(strip_whitespace=True, min_length=1)
+            ]
+        ],
+        Field(alias="license-files"),
+    ]
+    description: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ]
+    readme: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1)
+    ]
+    keywords: Sequence[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    ]
+    dependencies: Sequence[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    ]
+    requires_python: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1),
+        Field(alias="requires-python"),
+    ]
+    optional_dependencies: Annotated[
+        Mapping[
+            Annotated[
+                str, StringConstraints(strip_whitespace=True, min_length=1)
+            ],
+            Sequence[
+                Annotated[
+                    str, StringConstraints(strip_whitespace=True, min_length=1)
+                ]
+            ],
+        ]
+        | None,
+        Field(alias="optional-dependencies"),
+    ] = None
+    urls: Mapping[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)],
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)],
+    ]
+
+
+class PyProjectDynamic(BaseModel):
+    """The ``[tool.setuptools.dynamic]`` section data model."""
+
+    model_config = ConfigDict(strict=True)
+
+    version: (
+        Annotated[
+            Mapping[
+                str,
+                Annotated[
+                    str, StringConstraints(strip_whitespace=True, min_length=1)
+                ],
+            ],
+            Field(min_length=1, max_length=1),
+        ]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def check_dynamic_version(self) -> Self:
+        """
+        Validate :attr:`.PyProjectDynamic.version`.
+
+        :return: self
+        :raises ValueError: when :attr:`.PyProjectDynamic.version` is invalid
+        """
+        if self.version is None:
+            return self
+        for key in self.version:
+            if key not in (ATTR_KEY, FILE_KEY):
+                raise ValueError(
+                    f"Expected {ATTR_KEY} or {FILE_KEY}, found {key}"
+                )
+        return self
+
+
+class PyProjectFind(BaseModel):
+    """The ``[tool.setuptools.packages.find]`` section data model."""
+
+    model_config = ConfigDict(strict=True)
+
+    where: (
+        Annotated[
+            Sequence[
+                Annotated[
+                    str, StringConstraints(strip_whitespace=True, min_length=1)
+                ]
+            ],
+            Field(min_length=1),
+        ]
+        | None
+    ) = None
+
+
+class PyProjectPackages(BaseModel):
+    """The ``[tool.setuptools.packages]`` section data model."""
+
+    find: PyProjectFind | None = None
+
+
+class PyProjectSetuptools(BaseModel):
+    """The ``[tool.setuptools]`` data model."""
+
+    dynamic: PyProjectDynamic | None = None
+    packages: PyProjectPackages | None = None
+
+
+class PyProjectVutilsNoxPylint(BaseModel):
+    """The ``[tool.vutils-nox.sessions.pylint]`` section data model."""
+
+    init_hook: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+        | None,
+        Field(alias="init-hook"),
+    ] = None
+    extension_pkg_allow_list: Annotated[
+        Sequence[
+            Annotated[
+                str, StringConstraints(strip_whitespace=True, min_length=1)
+            ]
+        ]
+        | None,
+        Field(alias="extension-pkg-allow-list"),
+    ] = None
+
+
+class PyProjectVutilsNoxSessions(BaseModel):
+    """The ``[tool.vutils-nox.sessions]`` section data model."""
+
+    pylint: PyProjectVutilsNoxPylint | None = None
+
+
+class PyProjectVutilsNox(BaseModel):
+    """The ``[tool.vutils-nox]`` section data model."""
+
+    sessions: PyProjectVutilsNoxSessions | None = None
+
+
+class PyProjectTool(BaseModel):
+    """The ``[tool]`` data model."""
+
+    setuptools: PyProjectSetuptools | None = None
+    vutils_nox: Annotated[
+        PyProjectVutilsNox | None, Field(alias="vutils-nox")
+    ] = None
+
+
+class PyProject(BaseModel):
+    """The ``pyproject.toml`` data model."""
+
+    project: PyProjectProject
+    tool: PyProjectTool | None = None
+
+    def __hash__(self) -> int:
+        """
+        Compute the hash.
+
+        :return: the hash
+
+        Currently it returns just this object's :func:`id` since this object is
+        supposed to be read-only.
+        """
+        return id(self)
+
+
+@fix_decorator_type(functools.cache)
+def load_pyproject(path: pathlib.Path | None = None) -> PyProject:
+    """
+    Load ``pyproject.toml``.
+
+    :param path: The path to the ``pyproject.toml``-like file or to the
+        directory where the ``pyproject.toml`` file is present
+    :return: the content of ``pyproject.toml``
+    :raises OSError: when ``pyproject.toml`` cannot be opened for reading
+    :raises pydantic.ValidationError: when ``pyproject.toml`` does not match
+        its specification
+
+    If :xarg:`path` is :obj:`None`, ``pyproject.toml`` is looked for in the
+    current working directory. If :xarg:`path` is a directory,
+    ``pyproject.toml`` is looked for in that directory. Otherwise, :xarg:`path`
+    should point to a valid TOML file with a content satisfying the
+    ``pyproject.toml`` content specification.
+    """
+    if path is None:
+        path = pathlib.Path.cwd()
+    if path.is_dir():
+        path = path / PYPROJECT_TOML
+    return PyProject.model_validate(load_toml(path))
+
+
+@fix_decorator_type(functools.cache)
+def get_metadata(pyproject: PyProject) -> StandardMetadata:
+    """
+    Extract metadata from the ``pyproject.toml`` content.
+
+    :param pyproject: The content of the ``pyproject.toml``-like file
+    :return: the metadata
+    """
+    return StandardMetadata.from_pyproject(pyproject.model_dump(by_alias=True))
+
+
+@fix_decorator_type(functools.cache)
+def get_name(pyproject: PyProject) -> str:
+    """
+    Get the value of ``project.name``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the name of the project
+    """
+    return get_metadata(pyproject).name
+
+
+@fix_decorator_type(functools.cache)
+def get_version(pyproject: PyProject) -> Version | None:
+    """
+    Get the value of ``project.version``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the project version
+    """
+    return get_metadata(pyproject).version
+
+
+@fix_decorator_type(functools.cache)
+def get_dependencies(pyproject: PyProject) -> Iterable[Requirement]:
+    """
+    Get the value of ``project.dependencies``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the list of dependencies
+    """
+    return get_metadata(pyproject).dependencies
+
+
+@fix_decorator_type(functools.cache)
+def get_optional_dependencies(
+    pyproject: PyProject,
+) -> Mapping[str, Iterable[Requirement]]:
+    """
+    Get the value of ``project.optional-dependencies``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the list of optional dependencies
+    """
+    return get_metadata(pyproject).optional_dependencies
+
+
+@fix_decorator_type(functools.cache)
+def get_license_files(pyproject: PyProject) -> Iterable[pathlib.Path] | None:
+    """
+    Get the value of ``project.license-files``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the list of license files
+    """
+    return get_metadata(pyproject).license_files
+
+
+@fix_decorator_type(functools.cache)
+def get_dynamic(pyproject: PyProject, field: str) -> tuple[str, str] | None:
+    """
+    Get the details about a dynamically specified field.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :param field: The dynamically specified field name
+    :return: the pair containing the directive name and the value associated
+        with that directive or :obj:`None` if :xarg:`field` is not dynamic
+
+    Get the value of :xarg:`field` from the ``tool.setuptools.dynamic``
+    section. The first element of the returned pair is the name of a directive
+    (either ``attr`` or ``file``) and the second element is the value
+    associated with the directive (i.e. a fully qualified attribute name or a
+    file name, respectively).
+    """
+    tool = pyproject.tool
+    if tool is None:
+        return None
+    setuptools = tool.setuptools
+    if setuptools is None:
+        return None
+    dynamic = setuptools.dynamic
+    if dynamic is None:
+        return None
+    data = {
+        VERSION_KEY: dynamic.version,
+    }.get(field)
+    if data is None:
+        return None
+    return next(iter(data.items()))
+
+
+@fix_decorator_type(functools.cache)
+def get_where(pyproject: PyProject) -> Iterable[str] | None:
+    """
+    Get the value of ``tool.setuptools.packages.find.where``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the list of directories, relative to the ``pyproject.toml``-like
+        file directory, where to look for packages to be distributed or
+        :obj:`None` if no such list is specified in the ``pyproject.toml`` data
+    """
+    tool = pyproject.tool
+    if tool is None:
+        return None
+    setuptools = tool.setuptools
+    if setuptools is None:
+        return None
+    packages = setuptools.packages
+    if packages is None:
+        return None
+    find = packages.find
+    if find is None:
+        return None
+    return find.where
+
+
+@fix_decorator_type(functools.cache)
+def get_vutils_nox_sessions(
+    pyproject: PyProject,
+) -> PyProjectVutilsNoxSessions | None:
+    """
+    Get the value of ``tool.vutils-nox.sessions``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the content of ``tool.vutils-nox.sessions`` or :obj:`None` if it
+        is not present in :xarg:`pyproject`
+    """
+    tool = pyproject.tool
+    if tool is None:
+        return None
+    vutils_nox = tool.vutils_nox
+    if vutils_nox is None:
+        return None
+    return vutils_nox.sessions
+
+
+@fix_decorator_type(functools.cache)
+def project_name() -> str:
+    """
+    Return the name of the project.
+
+    :return: the name of the project
+    """
+    return get_name(load_pyproject())
+
+
+@fix_decorator_type(functools.cache)
+def project_pythons() -> Sequence[str]:
+    """
+    Return the list of Python versions supported by the project.
+
+    :return: the list of Python versions supported by the project
+    """
+    return [
+        classifier.split()[-1]
+        for classifier in get_metadata(load_pyproject()).classifiers
+        if classifier.startswith("Programming Language :: Python :: 3.")
+    ]
+
+
+def ghci_matrix(output_name: str) -> str:
+    """
+    Generate a matrix consumable by GitHub Actions.
+
+    :param output_name: The output name (see below)
+    :return: the matrix as a JSON string
+    :raises ValueError: when there are no Python 3.x versions specified in
+        ``pyproject.toml``'s ``project.classifiers``
+
+    In GitHub Actions, it is possible to generate a CI matrix in a one job and
+    pass it to another job. To do this, the first job needs to pass a string
+    like this to ``$GITHUB_OUTPUT``:
+
+    .. code_block:: shell
+
+        echo 'ci_matrix=["3.14", "3.15"]' >> "$GITHUB_OUTPUT"
+
+    and the second job can then pick up this string from the first job's output
+    and define a matrix from it:
+
+    .. code_block:: yaml
+
+        strategy:
+          matrix:
+            python_version: ${{ fromJSON(needs.def-matrix.outputs.ci_matrix) }}
+
+    This function provides the ability to generate a CI matrix based on
+    ``project.classifiers`` from the project's ``pyproject.toml``:
+
+    .. code_block:: shell
+
+        python -c '
+            from vutils.nox.project import ghci_matrix
+
+            print(ghci_matrix("ci_matrix"))
+        ' >> "$GITHUB_OUTPUT"
+
+    The :xarg:`output_name` parameter influences the output name (in this
+    example, the output name is ``ci_matrix``).
+    """
+    pythons = [f'"{v}"' for v in project_pythons()]
+    if not pythons:
+        raise ValueError("No 3.x Pythons specified in classifiers")
+    return f"{output_name}=[{', '.join(pythons)}]"
+
+
+@fix_decorator_type(functools.cache)
+def requires_python() -> tuple[str, str]:
+    """
+    Return the minimal Python version required.
+
+    :return: the minimal Python version required in form ``("<major>.<minor>",
+        "<major><minor>")``
+    :raises ValueError: when there are no supported Python versions specified
+        in the ``project.classifiers`` list of the ``pyproject.toml`` file
+    """
+    pythons = project_pythons()
+    if not pythons:
+        raise ValueError("No supported Python versions specified")
+    pyver = pythons[0]
+    return (pyver, pyver.replace(".", ""))
+
+
+@fix_decorator_type(functools.cache)
+def project_dependencies(optional: str | None = None) -> Iterable[Requirement]:
+    """
+    Return the list of project dependencies.
+
+    :param optional: The name of optional project dependencies to include, if
+        specified
+    :return: the list of project dependencies
+    """
+    pyproject = load_pyproject()
+    deps = list(get_dependencies(pyproject))
+    if optional is not None:
+        deps.extend(get_optional_dependencies(pyproject).get(optional, []))
+    return deps
+
+
+@fix_decorator_type(functools.cache)
+def project_sessions() -> PyProjectVutilsNoxSessions | None:
+    """
+    Return the ``tool.vutils-nox.sessions`` configuration.
+
+    :return: the ``tool.vutils-nox.sessions`` configuration or :obj:`None` if
+        it is not available
+    """
+    return get_vutils_nox_sessions(load_pyproject())
+
+
+@fix_decorator_type(functools.cache)
+def pylint_extension_pkgs() -> Iterable[str]:
+    """
+    Return ``tool.vutils-nox.sessions.pylint.extension-pkg-allow-list``.
+
+    :return: ``tool.vutils-nox.sessions.pylint.extension-pkg-allow-list`` as a
+        command line argument directly consumable by ``pylint`` command line
+        interface or iterable with no items if unspecified
+    """
+    sessions = project_sessions()
+    if sessions is None:
+        return []
+    pylint = sessions.pylint
+    if pylint is None:
+        return []
+    extension_pkgs = pylint.extension_pkg_allow_list
+    if extension_pkgs is None:
+        return []
+    return ["--extension-pkg-allow-list", ",".join(extension_pkgs)]
+
+
+@fix_decorator_type(functools.cache)
+def pylint_init_hook() -> Iterable[str]:
+    """
+    Return ``tool.vutils-nox.sessions.pylint.init-hook``.
+
+    :return: ``tool.vutils-nox.sessions.pylint.init-hook`` as a command line
+        argument directly consumable by ``pylint`` command line interface or
+        iterable with no items if unspecified
+    """
+    sessions = project_sessions()
+    if sessions is None:
+        return []
+    pylint = sessions.pylint
+    if pylint is None:
+        return []
+    init_hook = pylint.init_hook
+    if init_hook is None:
+        return []
+    return ["--init-hook", init_hook]
+
+
+def resolve_dynamic_version(session: Session, pyproject: PyProject) -> Version:
+    """
+    Resolve dynamic version from ``pyproject.toml`` data.
+
+    :param session: The Nox session
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the resolved version
+    :raises ValueError: when the version cannot be resolved due to invalid,
+        insufficient, or missing data
+    :raises OSError: when the file with the version cannot be opened for
+        reading
+    """
+    dynver = get_dynamic(pyproject, VERSION_KEY)
+    if dynver is None:
+        raise ValueError("Missing version")
+
+    directive, value = dynver
+    if directive == ATTR_KEY:
+        parts = value.rsplit(".", 1)
+        if len(parts) != 2:
+            raise ValueError(f"`{value}` has no module name part")
+        pypath: str | None = None
+        where = get_where(pyproject)
+        if where is not None:
+            where = list(filter(None, where))
+        if where:
+            pypath = os.pathsep.join(where)
+        with setenv(session, {EV_PYTHONPATH: pypath}):
+            version = run_script(
+                session, f"from {parts[0]} import {parts[1]} as x; print(x)"
+            )
+            if not version or IMPORT_ERROR_RE.search(version):
+                raise ValueError(f"Invalid version: `{version}`")
+            return Version(version)
+    elif directive == FILE_KEY:
+        path = resolve_path(value)
+        if not path.is_file():
+            raise OSError(f"`{path}` is not a file")
+        with path.open(encoding="utf-8") as fobj:
+            version = fobj.read().strip()
+            if not version:
+                raise ValueError("Invalid version (empty string)")
+            return Version(version)
+    else:
+        raise ValueError(f"Invalid directive: `{directive}`")

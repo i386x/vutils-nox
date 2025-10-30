@@ -1,0 +1,17 @@
+---
+
+name: Test vutils-nox
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  call-ci:
+    uses: ./.github/workflows/ci-workflow.yml
+    secrets:
+      token: ${{ secrets.GITHUB_TOKEN }}
