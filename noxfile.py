@@ -1,0 +1,9 @@
+#
+# File:    ./noxfile.py
+# Author:  Jiří Kučera <sanczes AT gmail.com>
+# Date:    2025-11-03 02:01:49 +0100
+# Project: vutils-nox: Shared Nox configuration for vutils
+#
+# SPDX-License-Identifier: MIT
+#
+"""The Noxfile."""

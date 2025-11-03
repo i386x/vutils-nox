@@ -8,21 +8,24 @@
 #
 """Definitions of commands."""
 
+import configparser
 import hashlib
-
+import optparse
 from collections.abc import MutableMapping
 from typing import TYPE_CHECKING, overload
 
+from nox.logger import logger
 from pydantic import BaseModel, ConfigDict
+from setuptools import find_namespace_packages, find_packages
+from tomli_w import dump as toml_dump
 
-from vutils.nox.pkgspec import LocalDist, Security
-from vutils.nox.utils import data2str
+from vutils.nox.pkgspec import InstallMode, LocalDist, Security, KW_NAME
+from vutils.nox.utils import data2str, resolve_path
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping, MutableSequence
-    from hashlib import HASH as Hasher
-    from io import TextIOWrapper
-    from os import PathLike
+    from collections.abc import Callable, Iterable, Mapping, MutableSequence
+    import io
+    import os
     from typing import ClassVar, Generator, Literal, TypeVar, Unpack
 
     from nox.sessions import Session
@@ -32,21 +35,27 @@ if TYPE_CHECKING:
         CommandArgs,
         CommandBaseType,
         CommandDefs,
+        CommandOptions,
         CommandProps,
         ConfType,
         DepsType,
         PkgSpecType,
+        StrPath,
     )
 
     T = TypeVar("T", bound=Security|str)
 
 #: Parameters, keys, and properties
 KW_ACTIONS: Literal["actions"] = "actions"
+KW_CACHEDIR: Literal["cachedir"] = "cachedir"
 KW_CONF: Literal["conf"] = "conf"
+KW_CONFIG: Literal["config"] = "config"
 KW_DEPS: Literal["deps"] = "deps"
 KW_DESCRIPTION: Literal["description"] = "description"
-KW_MODULE: Literal["module"] = "module"
-KW_NAME: Literal["name"] = "name"
+KW_ENVNAME: Literal["envname"] = "envname"
+KW_INSTALL_MODE: Literal["install_mode"] = "install_mode"
+KW_PACKAGE: Literal["package"] = "package"
+KW_ROOTDIR: Literal["rootdir"] = "rootdir"
 
 
 class CommandStateData(BaseModel):
@@ -64,7 +73,7 @@ class CommandState:
     #: The name of the file that serves as the persistent storage
     __name: str
     #: The path to the persistent storage
-    __storage: PathLike[str] | None
+    __storage: os.PathLike[str] | None
     #: The data reflecting the command state
     __data: CommandStateData
 
@@ -80,7 +89,7 @@ class CommandState:
         self.__storage = None
         self.__data = CommandStateData(dependencies={}, configuration={})
 
-    def __get_storage(self, session: Session) -> PathLike[str]:
+    def __get_storage(self, session: Session) -> os.PathLike[str]:
         """
         Get the path to the persistent storage.
 
@@ -102,10 +111,10 @@ class CommandState:
         By calling this method changes made so far are discarded and replaced
         with the recent data from the persistent storage.
         """
-        storage: PathLike[str] = self.__get_storage(session)
+        storage: os.PathLike[str] = self.__get_storage(session)
         if not storage.is_file():
             return
-        fobj: TextIOWrapper
+        fobj: io.TextIOWrapper
         with storage.open() as fobj:
             self.__data = CommandStateData.model_validate_json(
                 fobj.read(), strict=True
@@ -118,19 +127,32 @@ class CommandState:
         :param session: The Nox session
         :raises pydantic.PydanticSerializationError: if the data are corrupted
         """
-        storage: PathLike[str] = self.__get_storage(session)
+        storage: os.PathLike[str] = self.__get_storage(session)
+
+        fobj: io.TextIOWrapper
         with storage.open("w") as fobj:
             fobj.write(self.__data.model_dump_json(warnings="error"))
 
-    def changed_deps(self, session: Session, command: Command) -> bool:
+    def changed_deps(self, command: Command) -> bool:
         """
         Check whether the set of packages to install has been changed.
 
-        :param session: The Nox session
         :param command: The command
         :return: :obj:`True` if the set of packages associated with
             :xarg:`command` has been changed
         """
+
+        def callback(cmd: Command) -> None:
+            """
+            Gather the state of :xarg:`cmd`'s dependencies.
+
+            :param cmd: The command
+            """
+            cmd.changed(KW_DEPS)
+
+        # Gather the state of subcommands' dependencies ...
+        command.traverse(callback)
+        # ... and then of command's ones
         cmd2envs: MutableMapping[str, MutableMapping[str, str]] = (
             self.__data.dependencies
         )
@@ -141,7 +163,7 @@ class CommandState:
         new_checksum: str = command.checksum(KW_DEPS)
         changed = changed or command.envname not in env2sum
         checksum: str = env2sum.setdefault(command.envname, new_checksum)
-        session.log(
+        logger.log(
             "DEPENDENCIES: %s: %s: %s (%s)",
             command.name,
             command.envname,
@@ -157,23 +179,22 @@ class CommandState:
             return True
         return changed
 
-    def changed_conf(self, session: Session, command: Command) -> bool:
+    def changed_conf(self, command: Command) -> bool:
         """
         Check whether the configuration has been changed.
 
-        :param session: The Nox session
         :param command: The command
         :return: :obj:`True` if the configuration associated with
             :xarg:`command` has been changed
         """
-        if command.config() is None:
+        config: str | None = command.config()
+        if config is None:
             return False
-        config: str = command.config()
         cfg2sum: MutableMapping[str, str] = self.__data.configuration
         new_checksum: str = command.checksum(KW_CONF)
         changed: bool = config not in cfg2sum
         checksum: str = cfg2sum.setdefault(config, new_checksum)
-        session.log(
+        logger.log(
             "CONFIGURATION: %s: %s (%s)",
             config,
             new_checksum,
@@ -236,7 +257,7 @@ class Container:
         :return: the checksum of the container data
         """
         if not self.__checksum:
-            hasher: Hasher = hashlib.new("sha512")
+            hasher: hashlib.HASH = hashlib.new("sha512")
 
             item: str
             for item in self.items():
@@ -327,7 +348,7 @@ class Dependencies(Container):
             )
             raise ValueError(detail)
         if isinstance(item, Security):
-            self.__updates.setdefault(pkg, [])
+            self.__updates.setdefault(name, [])
             if str(item):
                 self.__updates[name].append(item)
         elif isinstance(item, str):
@@ -392,19 +413,21 @@ class Dependencies(Container):
             yield item
 
     def install(
-        self, session: Session, command: Command, force: bool = False
+        self,
+        session: Session,
+        command: Command,
+        mode: InstallMode = InstallMode.NOINSTALL,
     ) -> None:
         """
         Install dependencies held by this container.
 
         :param session: The Nox session
         :param command: The command owning this container
-        :param force: :obj:`True` when force re-installation of all
-            dependencies is requested
+        :param mode: The installation mode
         """
         if self.__local:
-            self.__local.install(session, force_reinstall=force)
-        if command.changed(KW_DEPS, session) or force:
+            self.__local.install(session, mode=mode)
+        if command.changed(KW_DEPS) or mode > InstallMode.NOINSTALL:
             session.install(*self.__install_args, silent=False)
 
 
@@ -440,8 +463,134 @@ class Configuration(Container):
         self.__data[name] = item
 
     def items(self) -> Generator[str]:
-        """"""
+        """
+        Yield configuration converted to :class:`str`.
+
+        :return: the generator that yields configuration converted to
+            :class:`str` from which the checksum of this container is computed
+        """
         yield from data2str(self.__data)
+
+    def __write_config(self, path: os.PathLike[str]) -> None:
+        """
+        Dump the configuration to the file.
+
+        :param path: The path to the file to which the configuration is going
+            to be stored
+        :raises ValueError: when the configuration format, derived from the
+            suffix of the configuration file, is not supported
+        """
+        fobj: io.TextIOWrapper
+
+        suffix: str = path.suffix
+        if suffix == ".toml":
+            with path.open("wb") as fobj:
+                toml_dump(self.__data, fobj)
+        elif suffix in (".cfg", ".ini"):
+            parser: configparser.ConfigParser = configparser.ConfigParser()
+            parser.read_dict(self.__data)
+            with path.open("w") as fobj:
+                parser.write(fobj)
+        else:
+            raise ValueError(f"{path.name}: Format is not supported")
+
+    def config(self, command: Command) -> os.PathLike[str]:
+        """
+        Prepare and get the configuration file for the command.
+
+        :param command: The command
+        :return: the path to the configuration file
+        :raises ValueError: when the name of the configuration file cannot be
+            retrieved from the command
+        """
+        config: StrPath | None = command.config()
+        if config is None:
+            raise ValueError(
+                f"`{command.name}` has no configuration file attached to it"
+            )
+        path: os.PathLike[str] = command.cachedir / config
+        if command.changed(KW_CONF) or not path.is_file():
+            self.__write_config(path)
+        return path
+
+
+class CommandOptsParser(optparse.OptionParser):
+    """Command options parser."""
+
+    __slots__ = ()
+
+    def __init__(self, command: Command) -> None:
+        """
+        Initialize the parser.
+
+        :param command: The command owning this parser
+        """
+        optparse.OptionParser.__init__(
+            self, prog=command.name, description=command.description
+        )
+        self.set_defaults(*{KW_INSTALL_MODE: None})
+        self.add_option(
+            "-r",
+            "--reinstall",
+            action="store_const",
+            dest=KW_INSTALL_MODE,
+            const=InstallMode.REINSTALL,
+            help="reinstall dependencies",
+        )
+        self.add_option(
+            "-f",
+            "--force",
+            action="store_const",
+            dest=KW_INSTALL_MODE,
+            const=InstallMode.FORCE,
+            help="force reinstall dependencies",
+        )
+        self.add_option(
+            "--noinstall",
+            action="store_const",
+            dest=KW_INSTALL_MODE,
+            const=InstallMode.NOINSTALL,
+            help="do not install dependencies if they are already installed",
+        )
+
+    def process_args(
+        self, container: CommandProps, args: MutableSequence[str]
+    ) -> None:
+        """
+        Parse, process, and store arguments.
+
+        :param container: The container to which parsed and processed arguments
+            are going to be stored
+        :param args: Arguments to be parsed and processed
+        :raises optparse.OptParseError: when an error occurs during argument
+            parsing and/or processing
+
+        After arguments are parsed, remove ``--reinstall`` and ``--force`` from
+        :xarg:`args`, since all dependencies from subcommands are installed at
+        the parent level, but keep ``--noinstall`` so it can be propagated into
+        subcommands. When :xarg:`args` contain ``--help``, print the help
+        screen for the associated command and exit.
+        """
+        opts: optparse.Values
+        rest: Iterable[str]
+        opts, rest = self.parse_args(args)
+        del args[:len(args) - len(rest)]
+        mode: InstallMode = getattr(opts, KW_INSTALL_MODE, None)
+        if mode == InstallMode.NOINSTALL:
+            if args:
+                args.insert(0, "--")
+            args.insert(0, "--noinstall")
+        if mode is not None:
+            container[KW_INSTALL_MODE] = mode
+
+    def error(self, msg: str) -> None:
+        """
+        Issue an error.
+
+        :param msg: The error message
+        :raises optparse.OptParseError: with :xarg:`msg` when invoked
+        """
+        raise optparse.OptParseError(f"{self.get_prog_name()}: {msg}")
 
 
 class Command:
@@ -461,13 +610,21 @@ class Command:
       and passed to the given tool
     """
 
+    #: Command definitions (dependencies and configuration)
     DEFS: ClassVar[CommandDefs] = {KW_DEPS: {}, KW_CONF: {}}
 
+    #: The command state
     __state: CommandState
+    #: Actions to be executed when the command runs
     __actions: MutableSequence[ActionType]
+    #: The command dependencies container
     __dependencies: Dependencies
+    #: The command configuration container
     __configuration: Configuration
+    #: The command properties
     __properties: CommandProps
+    #: The option parser
+    __parser: CommandOptsParser
 
     __slots__ = (
         "__state",
@@ -475,6 +632,7 @@ class Command:
         "__dependencies",
         "__configuration",
         "__properties",
+        "__parser",
     )
 
     def __collect_actions(self, kwargs: CommandArgs) -> None:
@@ -509,7 +667,7 @@ class Command:
         container: MutableMapping[str, object] = {}
         bases: MutableSequence[CommandBaseType] = list(cls.__mro__)
         while bases:
-            base: CommandBaseType = bases.pop(-1)
+            base: CommandBaseType = bases.pop()
             if issubclass(base, Command):
                 container.update(base.DEFS[kind])
         return container
@@ -518,10 +676,16 @@ class Command:
         """Initialize dependencies."""
         self.__dependencies = Dependencies()
 
-        action: ActionType
-        for action in self.__actions:
-            if isinstance(action, Command):
-                action.add_deps_to(self.__dependencies)
+        def callback(cmd: Command) -> None:
+            """
+            Add command dependencies to the container.
+
+            :param cmd: The command
+            """
+            cmd.add_deps_to(self.__dependencies)
+
+        self.traverse(callback, shallow=True)
+
         pkg: str
         spec: PkgSpecType
         for pkg, spec in type(self).__collect_defs(KW_DEPS):
@@ -556,33 +720,223 @@ class Command:
             desc = type(self).__doc__
         props.setdefault(KW_NAME, name)
         props.setdefault(KW_DESCRIPTION, desc)
+        props.setdefault(KW_ENVNAME, name)
+        where: os.PathLike[str] = (
+            props.setdefault(KW_ROOTDIR, resolve_path(".")) / "src"
+        )
+        packages: Iterable[str] = find_packages(where=where)
+        if not packages:
+            packages = find_namespace_packages(where=where)
+        if packages:
+            props.setdefault(KW_PACKAGE, packages[-1])
+        props.setdefault(KW_CONFIG, None)
+        props.setdefault(KW_INSTALL_MODE, InstallMode.NOINSTALL)
         self.__properties = props
 
     def __init__(
         self, state: CommandState, **kwargs: Unpack(CommandArgs)
     ) -> None:
-        """"""
+        """
+        Initialize the command.
+
+        :param state: The command state
+        :param kwargs: The command key-value arguments
+        """
         self.__state = state
         self.__collect_actions(kwargs)
         self.__initialize_dependencies()
         self.__initialize_configuration()
         self.__collect_properties(kwargs)
+        self.__parser = CommandOptsParser(self)
+
+    def traverse(
+        self, callback: Callable[[Command], None], shallow: bool = False
+    ) -> None:
+        """
+        Traverse subcommands in the first order manner.
+
+        :param callback: The callback applied on every subcommand
+        :param shallow: When set to :obj:`True`, do not traverse subcommands'
+            children
+        """
+        subcommand: ActionType
+        for subcommand in self.__actions:
+            if isinstance(subcommand, Command):
+                callback(subcommand)
+                if not shallow:
+                    subcommand.traverse(callback)
+
+    def add_deps_to(self, container: Dependencies) -> None:
+        """
+        Add dependencies from this command to :xarg:`container`.
+
+        :param container: The container to which these command's dependencies
+            are going to be stored
+        """
+        self.__dependencies.add_myself_to(container)
 
     @property
-    def __name__(self):
-        """"""
+    def __name__(self) -> str:
+        """
+        Get the command name.
+
+        :return: the command name
+        """
         return self.name
 
     @property
-    def __doc__(self):
-        """"""
+    def name(self) -> str:
+        """
+        Get the command name.
+
+        :return: the command name
+        """
+        return self.__properties[KW_NAME]
+
+    @property
+    def __doc__(self) -> str:
+        """
+        Get the command description.
+
+        :return: the command description
+        """
         return self.description
 
-    def run(self, session):
-        """"""
+    @property
+    def description(self) -> str:
+        """
+        Get the command description.
 
-    def __call__(self, session):
-        """"""
-        self.install(session)
-        for command in self.callables:
-            command(session)
+        :return: the command description
+        """
+        return self.__properties[KW_DESCRIPTION]
+
+    @property
+    def envname(self) -> str:
+        """
+        Get the name of the Python environment.
+
+        :return: the name of the Python environment under which this command is
+            running
+        """
+        return self.__properties[KW_ENVNAME]
+
+    @property
+    def package(self) -> str:
+        """
+        Get the importable package name.
+
+        :return: the name of the Python package discovered by Setuptools from
+            the project's ``./src`` directory in format consumable by Python
+            import mechanism
+        :raises KeyError: when the discovery has failed
+        """
+        if KW_PACKAGE not in self.__properties:
+            raise KeyError(
+                f"{self.name}.package: Package discovery has failed"
+            )
+        return self.__properties[KW_PACKAGE]
+
+    @property
+    def rootdir(self) -> os.PathLike[str]:
+        """
+        Get the project root directory.
+
+        :return: the project root directory
+        """
+        return self.__properties[KW_ROOTDIR]
+
+    @property
+    def cachedir(self) -> os.PathLike[str]:
+        """
+        Get the shared cache directory.
+
+        :return: the shared cache directory
+        :raises KeyError: when this property has been read too early
+        """
+        if KW_CACHEDIR not in self.__properties:
+            detail: str = (
+                f"{self.name}: `chachedir` property has not been yet set"
+                " (probably accessed before the command has been invoked)"
+            )
+            raise KeyError(detail)
+        return self.__properties[KW_CACHEDIR]
+
+    @properties
+    def opts(self) -> CommandOptions:
+        """
+        Get the command options.
+
+        :return: the command options
+        """
+        return {KW_INSTALL_MODE: self.__properties[KW_INSTALL_MODE]}
+
+    def changed(self, what: Literal["deps", "conf"]) -> bool:
+        """
+        Test whether the selected container has been changed.
+
+        :param what: The container selector (either ``deps`` for dependencies
+            or ``conf`` for configuration)
+        :return: :obj:`True` whether the selected container has been changed
+        """
+        return (
+            self.__state.changed_deps(self)
+            if what == KW_DEPS
+            else self.__state.changed_conf(self)
+        )
+
+    def checksum(self, what: Literal["deps", "conf"]) -> str:
+        """
+        Return the checksum of the selected container.
+
+        :param what: The container selector (either ``deps`` for dependencies
+            or ``conf`` for configuration)
+        :return: the checksum of the selected container
+        """
+        return (
+            self.__dependencies.checksum()
+            if what == KW_DEPS
+            else self.__configuration.checksum()
+        )
+
+    def config(self, fname: str | None = None) -> StrPath | None:
+        """
+        Prepare and get the configuration file for this command.
+
+        :param fname: The name of the requested configuration file
+        :return: the path to the requested configuration file
+        """
+        if fname is None:
+            return self.__properties[KW_CONFIG]
+        self.__properties[KW_CONFIG] = fname
+        return self.__configuration.config(self)
+
+    def run(self, session: Session) -> None:
+        """
+        Run the command body.
+
+        :param session: The Nox session
+
+        Users can override this method to perform their specific commands. By
+        default this method is no-op.
+        """
+
+    def __call__(self, session: Session) -> None:
+        """
+        Run the command.
+
+        :param session: The Nox session
+
+        Install dependencies and then run the specified actions. If no actions
+        were given during the command initialization, execute
+        :meth:`~.Command.run`.
+        """
+        self.__properties[KW_CACHEDIR] = session.cache_dir
+        self.__parser.process_args(self.__properties, session.posargs)
+        self.__dependencies.install(
+            session, self, mode=self.opts[KW_INSTALL_MODE]
+        )
+
+        action: ActionType
+        for action in self.__actions:
+            action(session)

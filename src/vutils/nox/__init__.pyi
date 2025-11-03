@@ -15,7 +15,7 @@ from nox.sessions import Session
 from typing_extensions import TypeAlias
 
 from vutils.nox.command import Command
-from vutils.nox.pkgspec import LocalDist, Security
+from vutils.nox.pkgspec import InstallMode, LocalDist, Security
 
 StrPath: TypeAlias = str | PathLike[str]
 
@@ -25,10 +25,17 @@ ActionType: TypeAlias = Callable[[Command, Session], None]
 DepsType: TypeAlias = MutableMapping[str, PkgSpecType]
 ConfType: TypeAlias = MutableMapping[str, object]
 
-class CommandProps(TypedDict, total=False):
+class CommandOptions(TypedDict, total=False):
+    install_mode: InstallMode
+
+class CommandProps(CommandOptions, total=False):
     name: str
     description: str
-    module: str
+    envname: str
+    package: str
+    rootdir: PathLike[str]
+    cachedir: PathLike[str]
+    config: str | None
 
 class CommandArgs(CommandProps, total=False):
     actions: Iterable[ActionType]

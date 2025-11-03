@@ -72,7 +72,7 @@ class Pytest(Command):
         session.run(
             "pytest",
             "-v",
-            f"--cov={self.module]}",
+            f"--cov={self.package}",
             "--cov-report=term-missing",
             "tests",
         )

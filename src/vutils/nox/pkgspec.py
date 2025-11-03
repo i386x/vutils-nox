@@ -19,12 +19,17 @@ from nox.project import load_toml
 from vutils.nox.utils import is_installed, relative_path, resolve_path
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence
-    from os import PathLike
+    from collections.abc import Iterable, MutableSequence
+    import os
+    from typing import Literal
 
     from nox.sessions import Session
 
     from vutils.nox import StrPath
+
+#: Keywords
+KW_NAME: Literal["name"] = "name"
+KW_PROJECT: Literal["project"] = "project"
 
 
 class DistKind(enum.IntEnum):
@@ -36,22 +41,32 @@ class DistKind(enum.IntEnum):
     BDIST: int = 2
 
 
+class InstallMode(enum.IntEnum):
+    """Installation mode."""
+    #: Do not install dependencies if they are already installed
+    NOINSTALL: int = 0
+    #: Reinstall dependencies
+    REINSTALL: int = 1
+    #: Force reinstall dependencies
+    FORCE: int = 2
+
+
 @functools.total_ordering
 class LocalDist:
     """Python package distribution on the local file system."""
 
     #: The path to the package
-    path: "PathLike[str]"
+    path: os.PathLike[str]
     #: The kind of the package distribution
     kind: DistKind
     #: Details discovered about the package, containing the real path to the
     #: package on the local file system and the name of the package
-    __discovered: tuple["PathLike[str]", str] | None
+    __discovered: tuple[os.PathLike[str], str] | None
 
     __slots__ = ("path", "kind", "__discovered")
 
     def __init__(
-        self, path: "StrPath" = ".", kind: DistKind = DistKind.SDIST
+        self, path: StrPath = ".", kind: DistKind = DistKind.SDIST
     ) -> None:
         """
         Initialize the instance.
@@ -83,7 +98,7 @@ class LocalDist:
         """
         return self.kind < other.kind
 
-    def discover(self, session: "Session") -> tuple["PathLike[str]", str]:
+    def discover(self, session: Session) -> tuple[os.PathLike[str], str]:
         """
         Discover the real path to the package and its name.
 
@@ -107,16 +122,15 @@ class LocalDist:
         self.path = resolve_path(self.path)
         if not self.path.is_dir():
             raise ValueError(f"`{self.path}` is not a directory")
-
-        source: "PathLike[str]"
+        source: os.PathLike[str]
         name: str
 
-        pyproject_toml: "PathLike[str]" = self.path / "pyproject.toml"
+        pyproject_toml: os.PathLike[str] = self.path / "pyproject.toml"
         if pyproject_toml.is_file():
             source = self.path
-            name = load_toml(pyproject_toml)["project"]["name"]
+            name = load_toml(pyproject_toml)[KW_PROJECT][KW_NAME]
         else:
-            wheels: "Iterable[PathLike[str]]" = self.path.glob("*.whl")
+            wheels: Iterable[os.PathLike[str]] = self.path.glob("*.whl")
             if len(wheels) != 1:
                 raise ValueError(
                     f"Exactly one *.whl is expected in `{self.path}`"
@@ -127,44 +141,36 @@ class LocalDist:
         return self.__discovered
 
     def install(
-        self,
-        session: "Session",
-        reinstall: bool = False,
-        force_reinstall: bool = False,
+        self, session: Session, mode: InstallMode = InstallMode.NOINSTALL
     ) -> None:
         """
         Install the local package.
 
         :param session: The Nox session
-        :param reinstall: When :obj:`True`, reinstall the package even if it is
-            already installed
-        :param force_reinstall: When :obj:`True`, remove the old package and
-            run the package manager with special force reinstall flags. Implies
-            :xarg:`reinstall`
+        :param mode: The installation mode
 
         Depending on how this package was discovered, it is installed either as
         a wheel or as an editable.
         """
-        source: "PathLike[str]"
+        source: os.PathLike[str]
         name: str
 
         source, name = self.discover(session)
-        if force_reinstall:
+        if mode == InstallMode.FORCE:
             self.remove(session)
-            reinstall = True
-        if not reinstall and is_installed(session, name):
+        if mode == InstallMode.NOINSTALL and is_installed(session, name):
             return
-        args: "Sequence[StrPath]" = [relative_path(source)]
+        args: MutableSequence[StrPath] = [relative_path(source)]
         if session.venv_backend == "uv" and source.is_file():
             args[0] = f"{name}@{args[0]}"
             args.insert(0, "--reinstall-package")
         if source.is_dir():
             args.insert(0, "-e")
-        if force_reinstall:
+        if mode == InstallMode.FORCE:
             args.insert(0, "--force-reinstall")
         session.install(*args, silent=False)
 
-    def remove(self, session: "Session") -> None:
+    def remove(self, session: Session) -> None:
         """
         Remove this package.
 
@@ -175,28 +181,24 @@ class LocalDist:
         _, name = self.discover(session)
         if not is_installed(session, name):
             return
-        cmd: "Sequence[StrPath]" = (
+        cmd: MutableSequence[StrPath] = (
             ["uv"] if session.venv_backend == "uv" else ["python", "-m"]
         )
         cmd.extend(["pip", "uninstall", name])
         session.run(*cmd)
 
     def __call__(
-        self,
-        session: "Session",
-        reinstall: bool = False,
-        force_reinstall: bool = False,
+        self, session: Session, mode: InstallMode = InstallMode.NOINSTALL
     ) -> None:
         """
         Install the local package.
 
         :param session: The Nox session
-        :param reinstall: See :xarg:`~.LocalDist.install:reinstall`
-        :param force_reinstall: See :xarg:`~.LocalDist.install:force_reinstall`
+        :param mode: The installation mode
 
         This is the alias to :meth:`~.LocalDist.install`.
         """
-        self.install(session, reinstall, force_reinstall)
+        self.install(session, mode)
 
 
 class Security:
