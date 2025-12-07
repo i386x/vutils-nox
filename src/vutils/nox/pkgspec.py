@@ -14,22 +14,23 @@ import pathlib
 from typing import TYPE_CHECKING
 
 from pkginfo import Wheel
-from nox.project import load_toml
 
-from vutils.nox.utils import is_installed, relative_path, resolve_path
+from vutils.nox.utils import (
+    KW_PYTHON,
+    PYPROJECT_TOML,
+    is_installed,
+    load_project,
+    relative_path,
+    resolve_path,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, MutableSequence
     import os
-    from typing import Literal
 
     from nox.sessions import Session
 
     from vutils.nox import StrPath
-
-#: Keywords
-KW_NAME: Literal["name"] = "name"
-KW_PROJECT: Literal["project"] = "project"
 
 
 class DistKind(enum.IntEnum):
@@ -43,6 +44,7 @@ class DistKind(enum.IntEnum):
 
 class InstallMode(enum.IntEnum):
     """Installation mode."""
+
     #: Do not install dependencies if they are already installed
     NOINSTALL: int = 0
     #: Reinstall dependencies
@@ -125,10 +127,10 @@ class LocalDist:
         source: os.PathLike[str]
         name: str
 
-        pyproject_toml: os.PathLike[str] = self.path / "pyproject.toml"
+        pyproject_toml: os.PathLike[str] = self.path / PYPROJECT_TOML
         if pyproject_toml.is_file():
             source = self.path
-            name = load_toml(pyproject_toml)[KW_PROJECT][KW_NAME]
+            name = load_project(pyproject_toml).name
         else:
             wheels: Iterable[os.PathLike[str]] = self.path.glob("*.whl")
             if len(wheels) != 1:
@@ -182,7 +184,7 @@ class LocalDist:
         if not is_installed(session, name):
             return
         cmd: MutableSequence[StrPath] = (
-            ["uv"] if session.venv_backend == "uv" else ["python", "-m"]
+            ["uv"] if session.venv_backend == "uv" else [KW_PYTHON, "-m"]
         )
         cmd.extend(["pip", "uninstall", name])
         session.run(*cmd)

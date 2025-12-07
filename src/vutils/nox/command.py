@@ -8,10 +8,12 @@
 #
 """Definitions of commands."""
 
+from collections.abc import MutableMapping
 import configparser
+import contextlib
 import hashlib
 import optparse
-from collections.abc import MutableMapping
+import pathlib
 from typing import TYPE_CHECKING, overload
 
 from nox.logger import logger
@@ -19,8 +21,8 @@ from pydantic import BaseModel, ConfigDict
 from setuptools import find_namespace_packages, find_packages
 from tomli_w import dump as toml_dump
 
-from vutils.nox.pkgspec import InstallMode, LocalDist, Security, KW_NAME
-from vutils.nox.utils import data2str, resolve_path
+from vutils.nox.pkgspec import InstallMode, LocalDist, Security
+from vutils.nox.utils import data2str, normalize_actions, normalize_description
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, MutableSequence
@@ -54,8 +56,10 @@ KW_DEPS: Literal["deps"] = "deps"
 KW_DESCRIPTION: Literal["description"] = "description"
 KW_ENVNAME: Literal["envname"] = "envname"
 KW_INSTALL_MODE: Literal["install_mode"] = "install_mode"
+KW_NAME: Literal["name"] = "name"
 KW_PACKAGE: Literal["package"] = "package"
 KW_ROOTDIR: Literal["rootdir"] = "rootdir"
+KW_STATEFILE: Literal["statefile"] = "statefile"
 
 
 class CommandStateData(BaseModel):
@@ -63,7 +67,8 @@ class CommandStateData(BaseModel):
 
     model_config = ConfigDict(str_min_length=1)
 
-    dependencies: MutableMapping[str, MutableMapping[str, str]]
+    # Command name to checksum mappings
+    dependencies: MutableMapping[str, str]
     configuration: MutableMapping[str, str]
 
 
@@ -79,7 +84,7 @@ class CommandState:
 
     __slots__ = ("__name", "__storage", "__data")
 
-    def __init__(self, name: str = ".state") -> None:
+    def __init__(self, name: str) -> None:
         """
         Initialize the command state.
 
@@ -153,20 +158,13 @@ class CommandState:
         # Gather the state of subcommands' dependencies ...
         command.traverse(callback)
         # ... and then of command's ones
-        cmd2envs: MutableMapping[str, MutableMapping[str, str]] = (
-            self.__data.dependencies
-        )
-        changed: bool = command.name not in cmd2envs
-        env2sum: MutableMapping[str, str] = cmd2envs.setdefault(
-            command.name, {}
-        )
+        cmd2sum: MutableMapping[str, str] = self.__data.dependencies
         new_checksum: str = command.checksum(KW_DEPS)
-        changed = changed or command.envname not in env2sum
-        checksum: str = env2sum.setdefault(command.envname, new_checksum)
+        changed: bool = command.name not in cmd2sum
+        checksum: str = cmd2sum.setdefault(command.name, new_checksum)
         logger.log(
-            "DEPENDENCIES: %s: %s: %s (%s)",
+            "DEPENDENCIES: %s: %s (%s)",
             command.name,
-            command.envname,
             new_checksum,
             "added" if changed else (
                 f"changed from {checksum}"
@@ -175,7 +173,7 @@ class CommandState:
             ),
         )
         if new_checksum != checksum:
-            env2sum[command.envname] = new_checksum
+            cmd2sum[command.name] = new_checksum
             return True
         return changed
 
@@ -642,7 +640,7 @@ class Command:
         :param kwargs: Key-value arguments
         """
         self.__actions = []
-        self.__actions.extend(kwargs.pop(KW_ACTIONS, []))
+        self.__actions.extend(normalize_actions(kwargs.pop(KW_ACTIONS, [])))
         if len(self.__actions) == 0:
             self.__actions.append(self.run)
 
@@ -720,9 +718,10 @@ class Command:
             desc = type(self).__doc__
         props.setdefault(KW_NAME, name)
         props.setdefault(KW_DESCRIPTION, desc)
+        props[KW_DESCRIPTION] = normalize_description(props[KW_DESCRIPTION])
         props.setdefault(KW_ENVNAME, name)
         where: os.PathLike[str] = (
-            props.setdefault(KW_ROOTDIR, resolve_path(".")) / "src"
+            props.setdefault(KW_ROOTDIR, pathlib.Path.cwd()) / "src"
         )
         packages: Iterable[str] = find_packages(where=where)
         if not packages:
@@ -733,16 +732,61 @@ class Command:
         props.setdefault(KW_INSTALL_MODE, InstallMode.NOINSTALL)
         self.__properties = props
 
-    def __init__(
-        self, state: CommandState, **kwargs: Unpack(CommandArgs)
-    ) -> None:
+    def __init__(self, **kwargs: Unpack(CommandArgs)) -> None:
         """
         Initialize the command.
 
-        :param state: The command state
         :param kwargs: The command key-value arguments
+
+        Supported key-value arguments are:
+
+        * ``actions``, specifying a list of actions to be executed; an action
+          is either a callable object accepting an instance of
+          :class:`nox.sessions.Session` as its only argument and returning
+          :obj:`None` or the name of a previously registered command via the
+          :deco:`~vutils.nox.decorators.add` decorator; actions are executed in
+          order they are specified; if no action is given,
+          :meth:`~.Command.run` is used
+        * ``name``, specifying the name of the session; if not given and there
+          is a single action attached to this command and it is not
+          :meth:`~.Command.run`, the name is the name of this action;
+          otherwise, the name is the ``__name__`` of this command in lowercase
+        * ``description``, specifying the session description; if not given and
+          there is a single action attached to this command and it is not
+          :meth:`~.Command.run`, the description is read from the ``__doc__``
+          property of this action; otherwise, the description is read from the
+          ``__doc__`` property of this command; if the description is
+          multi-line, the first line is taken; the first letter is lowercased
+          and the sole last dot, if present, is removed from the description
+        * ``envname``, specifying the name of the Python virtual environment;
+          if not given it is same as ``name``
+        * ``package``, specifying the importable name of the Python package,
+          produced via ``python -m build`` and installed via ``pip install -e
+          .`` or ``pip install <wheel produced during the build>``, which
+          source is under ``./src`` directory, relative to the project root
+          directory; if not given it is discovered automatically
+        * ``rootdir``, specifying the root directory of the project; if not
+          given the current working directory is used
+        * ``cachedir``, specifying the shared cache directory; if not given
+          the :class:`nox.sessions.Session`'s shared cache directory is used
+          (set when this command is executed)
+        * ``config``, specifying the name of a configuration file where the
+          configuration defined for this command via the
+          :deco:`~vutils.nox.decorators.cfg` decorator is stored; if not given
+          the configuration file is not accessible
+        * ``install_mode``, specifying a mode of how and when dependencies are
+          installed: (1) :attr:`~vutils.nox.pkgspec.NOINSTALL` means do not
+          install dependencies if they are already installed; (2)
+          :attr:`~vutils.nox.pkgspec.REINSTALL` means reinstall dependencies;
+          :attr:`~vutils.nox.pkgspec.FORCE` means force reinstall dependencies;
+          if not specified then :attr:`~vutils.nox.pkgspec.NOINSTALL` is used;
+          this key-value argument can be overridden from the command line via
+          positional arguments passed to any :class:`.Command`-based session
+          (type ``nox -s dummy -- --help`` for more info)
+        * ``statefile``, specifying the name of a file where the command state
+          is stored; if not given then ``".state"`` is used
         """
-        self.__state = state
+        self.__state = CommandState(kwargs.pop(KW_STATEFILE, ".state"))
         self.__collect_actions(kwargs)
         self.__initialize_dependencies()
         self.__initialize_configuration()
@@ -911,32 +955,85 @@ class Command:
         self.__properties[KW_CONFIG] = fname
         return self.__configuration.config(self)
 
-    def run(self, session: Session) -> None:
+    def run(self, session: Session, state: CommandState | None = None) -> None:
         """
         Run the command body.
 
         :param session: The Nox session
+        :param state: The command state
 
         Users can override this method to perform their specific commands. By
-        default this method is no-op.
+        default this method is no-op. If :xarg:`state` is not :obj:`None`, this
+        means that this command is a subcommand of some other command.
         """
 
-    def __call__(self, session: Session) -> None:
+    @contextlib.contextmanager
+    def context(
+        self, session: Session, state: CommandState | None = None
+    ) -> Generator[None]:
+        """
+        Create a context for running commands.
+
+        :param session: The Nox session
+        :param state: The command state
+
+        Save the old command state, cache directory, and installation mode. If
+        :xarg:`state` is not :obj:`None`, set the command state to
+        :xarg:`state`. Otherwise, load the command state from the persistent
+        storage. If the cache directory is not set, use the one provided by
+        :xarg:`session`. Set the installation mode based on command line
+        arguments passed to this command. After the command and its subcommands
+        are finished, restore previous state. If :xarg:`state` is :obj:`None`,
+        store the command state to the persistent storage.
+        """
+        old_state: CommandState = self.__state
+        cachedir: os.PathLike[str] | None = self.__properties.get(
+            KW_CACHEDIR, None
+        )
+        install_mode: InstallMode = self.__properties[KW_INSTALL_MODE]
+
+        try:
+            if state is not None:
+                self.__state = state
+            else:
+                self.__state.load(session)
+            if cachedir is None:
+                self.__properties[KW_CACHEDIR] = session.cache_dir
+            self.__parser.process_args(self.__properties, session.posargs)
+            yield
+        finally:
+            self.__properties[KW_INSTALL_MODE] = install_mode
+            if cachedir is None:
+                del self.__properties[KW_CACHEDIR]
+            if state is not None:
+                self.__state = old_state
+            else:
+                self.__state.store(session)
+
+    def __call__(
+        self, session: Session, state: CommandState | None = None
+    ) -> None:
         """
         Run the command.
 
         :param session: The Nox session
+        :param state: The command state
 
         Install dependencies and then run the specified actions. If no actions
         were given during the command initialization, execute
         :meth:`~.Command.run`.
-        """
-        self.__properties[KW_CACHEDIR] = session.cache_dir
-        self.__parser.process_args(self.__properties, session.posargs)
-        self.__dependencies.install(
-            session, self, mode=self.opts[KW_INSTALL_MODE]
-        )
 
-        action: ActionType
-        for action in self.__actions:
-            action(session)
+        Note that dependencies are not installed if this command is a
+        subcommand (this is indicated by :xarg:`state` not being :obj:`None`)
+        of some other command, since all dependencies were gathered and
+        installed on the top of the command tree.
+        """
+        with self.context(session, state):
+            if state is None:
+                self.__dependencies.install(
+                    session, self, mode=self.opts[KW_INSTALL_MODE]
+                )
+
+            action: ActionType
+            for action in self.__actions:
+                action(session, self.__state)

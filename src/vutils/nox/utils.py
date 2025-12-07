@@ -8,14 +8,68 @@
 #
 """Helpers and utilities."""
 
+from collections.abc import Sequence
+import os
 import os.path
 import pathlib
+from typing import TYPE_CHECKING
+
+from nox.project import load_toml
+from pydantic import BaseModel
+
+from vutils.nox.command import Command
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+    from typing import Generator, Literal, TypeGuard
+
+    from nox.registry import get
+    from nox.sessions import Session
+
+    from vutils.nox import ActionType, StrPath
+
+#: Constants and keywords
+CI_ENV_VARS: Iterable[str] = ("CI", "GITHUB_TOKEN")
+KW_PYTHON: Literal["python"] = "python"
+PYPROJECT_TOML: str = "pyproject.toml"
 
 
-def data2str(data):
-    """"""
-    if isinstance(data, dict):
+def is_dict(obj: object) -> TypeGuard[Mapping[object, object]]:
+    """
+    Narrow the type of :xarg:`obj` to the mapping.
+
+    :param obj: The object
+    :return: :obj:`True` if :xarg:`obj` has the :class:`dict` type
+    """
+    return isinstance(obj, dict)
+
+
+def is_list(obj: object) -> TypeGuard[Iterable[object]]:
+    """
+    Narrow the type of :xarg:`obj` to the iterable.
+
+    :param obj: The object
+    :return: :obj:`True` if :xarg:`obj` has the :class:`list` type
+    """
+    return isinstance(obj, list)
+
+
+def data2str(data: object) -> Generator[str]:
+    """
+    Convert structured data into string.
+
+    :param data: The structured data
+    :return: the generator object yielding the string representation of
+        :xarg:`data`
+    :raises TypeError: when :xarg:`data` are ill-formed
+
+    Can be used to obtain the checksum of the data.
+    """
+    if is_dict(data):
         yield "{"
+
+        key: object
+        value: object
         for key, value in data:
             if not isinstance(key, str):
                 raise TypeError("Only text keys are allowed")
@@ -23,8 +77,10 @@ def data2str(data):
             yield from data2str(value)
             yield ","
         yield "}"
-    elif isinstance(data, list):
+    elif is_list(data):
         yield "["
+
+        item: object
         for item in data:
             yield from data2str(item)
             yield ","
@@ -39,21 +95,219 @@ def data2str(data):
         raise TypeError(f"Unexpected object: {data!r}")
 
 
-def resolve_path(path):
-    """"""
+def resolve_path(path: StrPath) -> os.PathLike[str]:
+    """
+    Resolve :xarg:`path`.
+
+    :param path: The path to be resolved
+    :return: the resolved path
+    """
     return pathlib.Path(os.path.expandvars(os.path.expanduser(path))).resolve()
 
 
-def relative_path(path):
-    """"""
+def relative_path(path: os.PathLike[str]) -> os.PathLike[str]:
+    """
+    Make :xarg:`path` relative to the current working directory.
+
+    :param path: The path
+    :return: :xarg:`path` relative to the current working directory
+    """
     return path.relative_to(pathlib.Path.cwd(), walk_up=True)
 
 
-def is_installed(session, package):
-    """"""
-    script = (
+def is_action_callabel(action: ActionType | str) -> TypeGuard[ActionType]:
+    """
+    Check whether the action is callable.
+
+    :param action: The action
+    :return: :obj:`True` if the action is callable
+    """
+    return callable(action)
+
+
+def normalize_actions(
+    actions: Iterable[ActionType | str]
+) -> Generator[ActionType]:
+    """
+    Normalize actions.
+
+    :param actions: The list of actions or their names (can be intermixed)
+    :return: the generator yielding actions that are only callables
+    :raises KeyError: if an action is a name and that name is not present in
+        the Nox registry
+    :raises TypeError: if the action taken from the Nox registry is not an
+        instance of :class:`~vutils.nox.command.Command`
+
+    If an action is a callable it is yielded as it is. Otherwise, it is looked
+    up in the Nox registry and the found callable is then yielded.
+    """
+    registry: Mapping[str, object] = get()
+
+    action: ActionType | str
+    for action in actions:
+        if is_action_callable(action):
+            yield action
+        if action not in registry:
+            raise KeyError(f"`{action}` is not in Nox registry")
+        command: object = registry[action]
+        if not isinstance(command, Command):
+            raise TypeError(f"{command!r} is not a command")
+        yield command
+
+
+def normalize_description(desc: str) -> str:
+    """
+    Normalize description.
+
+    :param desc: The description
+    :return: the normalized description
+
+    A description is normalized following these steps:
+
+    #. select the first line
+    #. make the first letter lowercase
+    #. if the description ends with the dot is neither the part of ellipsis nor
+       the entire description is the dot
+
+       - remove the dot
+    """
+    desc = desc.strip().split("\n")[0].strip()
+    if len(desc) > 0:
+        desc = desc[0].lower() + desc[1:]
+        if len(desc) > 1 and desc[-1] == "." and desc[-2] != ".":
+            desc = desc[:-1].strip()
+    return desc
+
+
+class Project(BaseModel):
+    """The partial ``pyproject.toml``'s ``[project]`` data model."""
+
+    name: str
+    classifiers: Sequence[str]
+
+
+class PyProject(BaseModel):
+    """The partial ``pyproject.toml`` data model."""
+
+    project: Project
+
+
+def load_project(path: os.PathLike[str] | None = None) -> Project:
+    """
+    Load the ``[project]`` section from ``pyproject.toml``.
+
+    :param path: The path to the ``pyproject.toml`` file or similar
+    :return: the ``[project]`` section
+    :raises OSError: if the ``pyproject.toml`` file or similar cannot be opened
+        for reading
+    :raises ValueError: if the ``pyproject.toml`` file or similar is corrupted
+    :raises pydantic.ValidationError: if the ``pyproject.toml`` file or similar
+        is corrupted
+
+    If :xarg:`path` is :obj:`None`, ``pyproject.toml`` is looked for in the
+    current working directory. If :xarg:`path` is a directory,
+    ``pyproject.toml`` is looked for in that directory. Otherwise, :xarg:`path`
+    should point to a TOML file with a content satisfying the
+    ``pyproject.toml`` content specification.
+    """
+    if path is None:
+        path = pathlib.Path.cwd()
+    if path.is_dir():
+        path = path / PYPROJECT_TOML
+    return PyProject.model_validate(load_toml(path)).project
+
+
+def inside_ci() -> bool:
+    """
+    Return :obj:`True` if we are running inside CI.
+
+    :return: :obj:`True` when running inside CI
+    """
+    return any(x in os.environ for x in CI_ENV_VARS)
+
+
+def project_pythons() -> Sequence[str]:
+    """
+    Return the list of Python versions supported by the project.
+
+    :return: the list of Python versions supported by the project
+    """
+    return [
+        classifier.split()[-1]
+        for classifier in load_project().classifiers
+        if classifier.startswith("Programming Language :: Python :: 3.")
+    ]
+
+
+def run_script(session: Session, script: str) -> str:
+    """
+    Run the script under the session.
+
+    :param session: The Nox session
+    :param script: The script
+    :return: the script output
+    :raises nox.command.CommandFailed: when :xarg:`script` causes a failure
+    """
+    return session.run(KW_PYTHON, "-c", script, silent=True, log=False).strip()
+
+
+def interpreter(session: Session) -> str:
+    """
+    Get the real Python interpreter binary name.
+
+    :param session: The Nox session
+    :return: the real Python interpreter binary name for the :xarg:`session`
+    """
+    script: str = (
+        "import sys; import pathlib;"
+        " print(pathlib.Path(sys.executable).resolve().name)"
+    )
+    return run_script(session, script)
+
+
+def is_installed(session: Session, package: str) -> bool:
+    """
+    Check whether the package is installed.
+
+    :param session: The Nox session
+    :param package: The package
+    :return: :obj:`True` if :xarg:`package` is installed
+    """
+    script: str = (
         "from importlib.metadata import packages_distributions as pds;"
         f' print("{package}" in {{d for ds in pds().values() for d in ds}})'
     )
-    output = session.run("python", "-c", script, silent=True, log=False)
-    return output.strip().lower() == "true"
+    return run_script(session, script).lower() == "true"
+
+
+def package_dir(session: Session, package: str) -> os.PathLike[str]:
+    """
+    Return the directory where the package's content is installed.
+
+    :param session: The Nox session
+    :param package: The importable package name
+    :return: the directory where the package's content is installed (where the
+        ``__init__.py`` is present)
+    """
+    script: str = f"import {package}; print({package}.__file__)"
+    pkg_init_path: os.PathLike[str] = pathlib.Path(run_script(session, script))
+    return pkg_init_path.parent.resolve()
+
+
+def packages_dir(session: Session, package: str) -> os.PathLike[str]:
+    """
+    Return the path to ``site-packages`` where the package is installed.
+
+    :param session: The Nox session
+    :param package: The importable package name
+    :return: the path to the ``site-packages`` directory where the package is
+        installed
+    :raises OSError: if the ``site-packages`` directory cannot be located
+    """
+    pkgdir: os.PathLike[str] = package_dir(session, package)
+    detail: str = f"`{pkgdir}` contains no `site-packages` part"
+    while pkgdir != pkgdir.parent:
+        if pkgdir.name == "site-packages":
+            return pkgdir
+        pkgdir = pkgdir.parent
+    raise OSError(detail)
