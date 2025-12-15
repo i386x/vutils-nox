@@ -6,4 +6,12 @@
 #
 # SPDX-License-Identifier: MIT
 #
+# /// script
+# dependencies = ["-e ."]
+# ///
 """The Noxfile."""
+
+from vutils.nox.nox import setup
+
+
+setup()

@@ -8,16 +8,31 @@
 #
 """Predefined sessions, commands, and configuration."""
 
+import shutil
 from typing import TYPE_CHECKING
 
-from vutils.nox.command import KW_ENVNAME, KW_NAME
-from vutils.nox.utils import inside_ci, project_pythons, KW_PYTHON
+from vutils.nox.command import (
+    KW_ACTIONS, KW_DESCRIPTION, KW_ENVNAME, KW_NAME, Command
+)
+from vutils.nox.decorators import add, cfg, dep, KW_TAGS
+from vutils.nox.utils import (
+    dist_dir,
+    inside_ci,
+    packages_dir,
+    project_pythons,
+    relative_path,
+    KW_PYTHON,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Sequence, Unpack
+    from collections.abc import Iterable, MutableSequence, Sequence, Unpack
+    import os
     from typing import Generator
 
-    from vutils.nox import MatrixArgs
+    from nox.sessions import Session
+
+    from vutils.nox import MatrixArgs, StrPath
+    from vutils.nox.command import CommandState
 
 #: Run linters, recreate environment tag
 LINT_R_TAG: str = "lint-r"
@@ -63,18 +78,31 @@ def ci_matrix(**exts: Unpack(MatrixArgs)) -> Generator[MatrixArgs]:
     yield matrix
 
 
+@add(matrix=ci_matrix(), reuse_venv=True, default=False)
+class Dummy(Command):
+    """Dummy command."""
+
+    __slots__ = ()
+
+
 def purge_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
+    Create a test matrix for :class:`~.Purge` command.
+
+    :param pythons: Supported Python versions
+    :return: the test matrix
     """
+    pyver: str
+    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
             KW_NAME: f"pu{ver}",
-            "envname": f"py{ver}",
-            "description": f"Purge `py{ver}` environment",
-            "python": pyver,
-            "tags": [KW_TESTS, f"t{ver}"],
+            KW_ENVNAME: f"py{ver}",
+            KW_DESCRIPTION: f"Purge `py{ver}` environment",
+            KW_PYTHON: pyver,
+            KW_TAGS: [TESTS_TAG, f"t{ver}"],
         }
-    yield from default_matrix(tags=[KW_TESTS, KW_LINT_R])
+    yield from ci_matrix(tags=[TESTS_TAG, LINT_R_TAG])
 
 
 @add(matrix=purge_matrix(ALL_PYTHONS), reuse_venv=False, default=True)
@@ -83,42 +111,53 @@ class Purge(Command):
 
     __slots__ = ()
 
-    def run(self, session):
-        """"""
-        dist_dir = resolve_path(".") / "dist"
-        if dist_dir.is_dir():
-            shutil.rmtree(dist_dir, ignore_errors=True)
+    def run(self, session: Session, state: CommandState | None = None) -> None:
+        """
+        Perform the purge.
+
+        :param session: The Nox session
+        :param state: The command state
+        """
+        path: os.PathLike[str] = dist_dir()
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
 
 
-@add(
-    envname=KW_PYTHON,
-    python=KW_PYTHON,
-    reuse_venv=True,
-    default=True,
-    tags=[KW_TESTS],
-)
+@add(matrix=ci_matrix(), reuse_venv=True, default=True, tags=[TESTS_TAG])
 class Build(Command):
     """Build the package."""
 
     __slots__ = ()
 
-    def run(self, session):
-        """"""
-        dist_dir = resolve_path(".") / "dist"
-        if not dist_dir.is_dir():
-            session.run("python", "-m", "build")
+    def run(self, session: Session, state: CommandState | None = None) -> None:
+        """
+        Perform the package build.
+
+        :param session: The Nox session
+        :param state: The command state
+        """
+        if not dist_dir().is_dir():
+            session.run(KW_PYTHON, "-m", "build")
 
 
-def audit_matrix(pythons):
+def audit_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+    """
+    Create a test matrix for :class:`~.Audit` command.
+
+    :param pythons: Supported Python versions
+    :return: the test matrix
+    """
+    pyver: str
+    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
-            "name": f"pa{ver}",
-            "envname": f"py{ver}",
-            "description": f"Audit `py{ver}` for vulnerabilities",
-            "python": pyver,
+            KW_NAME: f"pa{ver}",
+            KW_ENVNAME: f"py{ver}",
+            KW_DESCRIPTION: f"Audit `py{ver}` for vulnerabilities",
+            KW_PYTHON: pyver,
         }
     if not pythons:
-        yield from default_matrix()
+        yield from ci_matrix()
 
 
 @dep("pip-audit")
@@ -128,21 +167,34 @@ class Audit(Command):
 
     __slots__ = ()
 
-    def run(self, session):
-        """"""
-        session.run("python", "-m", "pip_audit", "--progress-spinner", "off")
+    def run(self, session: Session, state: CommandState | None = None) -> None:
+        """
+        Perform the audit.
+
+        :param session: The Nox session
+        :param state: The command state
+        """
+        session.run(KW_PYTHON, "-m", "pip_audit", "--progress-spinner", "off")
 
 
-def pytest_matrix(pythons):
+def pytest_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+    """
+    Create a test matrix for :class:`~.Pytest` command.
+
+    :param pythons: Supported Python versions
+    :return: the test matrix
+    """
+    pyver: str
+    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
-            "name": f"py{ver}",
-            "envname": f"py{ver}",
-            "description": f"Run unit tests for `py{ver}`",
-            "python": pyver,
+            KW_NAME: f"py{ver}",
+            KW_ENVNAME: f"py{ver}",
+            KW_DESCRIPTION: f"Run unit tests for `py{ver}`",
+            KW_PYTHON: pyver,
         }
     if not pythons:
-        yield from default_matrix()
+        yield from ci_matrix()
 
 
 @dep(".")
@@ -155,8 +207,13 @@ class Pytest(Command):
 
     __slots__ = ()
 
-    def run(self, session):
-        """"""
+    def run(self, session: Session, state: CommandState | None = None) -> None:
+        """
+        Run unit tests.
+
+        :param session: The Nox session
+        :param state: The command state
+        """
         session.run(
             "pytest",
             "-v",
@@ -166,45 +223,72 @@ class Pytest(Command):
         )
 
 
-def coveralls_matrix(pythons):
+def coveralls_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+    """
+    Create a test matrix for :class:`~.Coveralls` command.
+
+    :param pythons: Supported Python versions
+    :return: the test matrix
+    """
+    pyver: str
+    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
-            "name": f"cov{ver}",
-            "envname": f"py{ver}",
-            "description": f"Report code coverage for `py{ver}`"
-            "python": pyver,
+            KW_NAME: f"cov{ver}",
+            KW_ENVNAME: f"py{ver}",
+            KW_DESCRIPTION: f"Report code coverage for `py{ver}`"
+            KW_PYTHON: pyver,
         }
     if not pythons:
-        yield from default_matrix()
+        yield from ci_matrix()
 
 
 @dep("coveralls")
+@cfg("report::exclude_also", ["^if TYPE_CHECKING:$"])
 @add(matrix=coveralls_matrix(ALL_PYTHONS), reuse_venv=True, default=False)
 class Coveralls(Command):
     """Report code coverage."""
 
     __slots__ = ()
 
-    def run(self, session):
-        """"""
-        args = ["coveralls"]
+    def run(self, session: Session, state: CommandState | None = None) -> None:
+        """
+        Report code coverage.
+
+        :param session: The Nox session
+        :param state: The command state
+        """
+        coveragerc: StrPath | None = self.config(".coveragerc")
+        args: MutableSequence[str] = ["coveralls", f"--rcfile={coveragerc}"]
         if INSIDE_CI:
-            basedir = relative_path(packages_dir(session, self.package))
+            basedir: os.PathLike[str] = relative_path(
+                packages_dir(session, self.package)
+            )
             args.extend([f"--basedir={basedir}", "--srcdir=src"])
         else:
             args.append(f"--output={self.envname}-coverage.txt")
         session.run(*args)
 
 
-def test_matrix(pythons):
+def test_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+    """
+    Create a test matrix for :class:`~.Test` command.
+
+    :param pythons: Supported Python versions
+    :return: the test matrix
+    """
+    pyver: str
+    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
-            "actions": [f"pa{ver}", f"py{ver}", f"cov{ver}"],
-            "name": f"test{ver}",
-            "envname": f"py{ver}",
-            "description": f"Run tests for py{ver}",
-            "python": pyver,
+            KW_ACTIONS: [f"pa{ver}", f"py{ver}", f"cov{ver}"],
+            KW_NAME: f"test{ver}",
+            KW_ENVNAME: f"py{ver}",
+            KW_DESCRIPTION: f"Run tests for py{ver}",
+            KW_PYTHON: pyver,
         }
+    if not pythons:
+        yield from ci_matrix(actions=["audit", "pytest", "coveralls"])
 
 
 @dep("./dist")
@@ -212,19 +296,39 @@ def test_matrix(pythons):
     matrix=test_matrix(ALL_PYTHONS),
     reuse_venv=True,
     default=True,
-    tags=[KW_TESTS],
+    tags=[TESTS_TAG],
 )
 class Test(Command):
     """Run tests."""
 
+    __slots__ = ()
+
 
 @dep("black")
-@cfg("line-length", 79)
+@cfg("tool::black::line-length", 79)
+@add(
+    matrix=ci_matrix(),
+    reuse_venv=True,
+    default=True,
+    tags=[LINT_TAG, LINT_R_TAG],
+)
 class Black(Command):
-    """"""
+    """Run formatting checks."""
 
     __slots__ = ()
 
-    def run(self, session):
-        """"""
-        session.run("black", "--config", self.config(f"{self.name}.toml"))
+    def run(self, session: Session, state: CommandState | None = None) -> None:
+        """
+        Run formatting checks.
+
+        :param session: The Nox session
+        :param state: The command state
+        """
+        session.run(
+            "black",
+            "--config",
+            self.config(f"{self.name}.toml"),
+            "--check",
+            "--diff",
+            ".",
+        )

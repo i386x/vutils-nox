@@ -20,7 +20,9 @@ from pydantic import BaseModel
 from vutils.nox.command import Command
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import (
+        Iterable, Mapping, MutableMapping, MutableSequence
+    )
     from typing import Generator, Literal, TypeGuard
 
     from nox.registry import get
@@ -30,6 +32,7 @@ if TYPE_CHECKING:
 
 #: Constants and keywords
 CI_ENV_VARS: Iterable[str] = ("CI", "GITHUB_TOKEN")
+DATAPATH_SEP: str = "::"
 KW_PYTHON: Literal["python"] = "python"
 PYPROJECT_TOML: str = "pyproject.toml"
 
@@ -93,6 +96,81 @@ def data2str(data: object) -> Generator[str]:
         yield f'("{data}")'
     else:
         raise TypeError(f"Unexpected object: {data!r}")
+
+
+def container_at_path(
+    data: MutableMapping[object, object], path: str
+) -> tuple[MutableMapping[object, object], str]:
+    """
+    Get a container at the path.
+
+    :param data: The data from which a container is extracted
+    :param path: The path to a container within data
+    :return: the found container and the last part of the path as a key to this
+        container
+    :raises TypeError: if the path cannot be fully traversed
+
+    Traverse :xarg:`data` alongside :xarg:`path`, return a container that is
+    located at the element just before the last element of :xarg:`path`. The
+    last element of the :xarg:`path` is considered as a key for further
+    manipulation with the container later when needed and as such it is then
+    returned together with the container to be processed by a user. If the
+    container does not exist alongside :xarg:`path` it is created. If
+    :xarg:`path` cannot be fully traversed, e.g. because some location is
+    occupied by object with wrong data type, an exception is raised.
+    """
+    parts: MutableSequence[str] = path.split(DATAPATH_SEP)
+    key: str = parts.pop(-1).strip()
+    container: MutableMapping[object, object] = data
+    visited: MutableSequence[str] = []
+
+    part: str
+    for part in parts:
+        part = part.strip()
+        visited.append(part)
+        if part not in container:
+            container[part] = {}
+        item: object = container[part]
+        if not is_dict(item):
+            raise TypeError(f"{DATAPATH_SEP.join(visited)}: Not a mapping")
+        container = item
+    return (container, key)
+
+
+class RemoveMarker:
+    """
+    Item remove marker.
+
+    An item marked with this marker will be removed from a container.
+    """
+
+
+def mergeinsert(
+    container: MutableMapping[object, object], item: object, key: object
+) -> None:
+    """
+    Insert, remove, or merge an item into the container.
+
+    :param container: The container
+    :param item: The item
+    :param key: The key under which the item is stored into or removed from the
+        container
+
+    If the item is :class:`~.RemoveMarker`, the item that is stored under the
+    key is removed from the container. If both the item and the item stored in
+    the container under the key are mappings, the item is recursively merged
+    into the item stored under the key in the container. Otherwise, the item is
+    just stored under the key into the container.
+    """
+    if item is RemoveMarker:
+        if key in container:
+            del container[key]
+    elif key in container and is_dict(container[key]) and is_dict(item):
+        ikey: object
+        for ikey in item:
+            mergeinsert(container[key], item[ikey], ikey)
+    else:
+        container[key] = item
 
 
 def resolve_path(path: StrPath) -> os.PathLike[str]:
@@ -237,6 +315,15 @@ def project_pythons() -> Sequence[str]:
         for classifier in load_project().classifiers
         if classifier.startswith("Programming Language :: Python :: 3.")
     ]
+
+
+def dist_dir() -> os.PathLike[str]:
+    """
+    Return the path to the ``./dist`` directory.
+
+    :return: the path to the ``./dist`` directory
+    """
+    return pathlib.Path.cwd() / "dist"
 
 
 def run_script(session: Session, script: str) -> str:

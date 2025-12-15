@@ -52,11 +52,6 @@ version = {attr = "vutils.nox.version.__version__"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.coverage.report]
-exclude_also = [
-    "^if TYPE_CHECKING:$",
-]
-
 [tool.black]
 line-length = 79
 

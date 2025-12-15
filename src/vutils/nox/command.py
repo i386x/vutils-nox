@@ -22,7 +22,9 @@ from setuptools import find_namespace_packages, find_packages
 from tomli_w import dump as toml_dump
 
 from vutils.nox.pkgspec import InstallMode, LocalDist, Security
-from vutils.nox.utils import data2str, normalize_actions, normalize_description
+from vutils.nox.utils import (
+    data2str, mergeinsert, normalize_actions, normalize_description
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping, MutableSequence
@@ -429,15 +431,6 @@ class Dependencies(Container):
             session.install(*self.__install_args, silent=False)
 
 
-class RemoveMarker:
-    """
-    Configuration item remove marker.
-
-    A configuration item marked with this marker will be removed (not included)
-    in the final configuration.
-    """
-
-
 class Configuration(Container):
     """Configuration container."""
 
@@ -458,7 +451,7 @@ class Configuration(Container):
         :param name: The configuration item name
         :param item: The configuration item itself
         """
-        self.__data[name] = item
+        mergeinsert(self.__data, item, name)
 
     def items(self) -> Generator[str]:
         """
@@ -476,7 +469,10 @@ class Configuration(Container):
         :param path: The path to the file to which the configuration is going
             to be stored
         :raises ValueError: when the configuration format, derived from the
-            suffix of the configuration file, is not supported
+            suffix or the name of the configuration file, is not supported
+
+        A file with no suffix whose name ends with ``rc`` is treated as INI
+        file.
         """
         fobj: io.TextIOWrapper
 
@@ -484,7 +480,7 @@ class Configuration(Container):
         if suffix == ".toml":
             with path.open("wb") as fobj:
                 toml_dump(self.__data, fobj)
-        elif suffix in (".cfg", ".ini"):
+        elif suffix in (".cfg", ".ini") or path.name.endswith("rc"):
             parser: configparser.ConfigParser = configparser.ConfigParser()
             parser.read_dict(self.__data)
             with path.open("w") as fobj:
@@ -697,9 +693,7 @@ class Command:
         key: str
         value: object
         for key, value in type(self).__collect_defs(KW_CONF):
-            if value is RemoveMarker:
-                continue
-            self.__configuration.add(pkg, value)
+            self.__configuration.add(key, value)
         self.__configuration.commit()
 
     def __collect_properties(self, props: CommandProps) -> None:
@@ -949,6 +943,8 @@ class Command:
 
         :param fname: The name of the requested configuration file
         :return: the path to the requested configuration file
+        :raises ValueError: when the path to the configuration file cannot be
+            retrieved
         """
         if fname is None:
             return self.__properties[KW_CONFIG]

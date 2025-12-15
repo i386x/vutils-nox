@@ -25,6 +25,7 @@ PkgSpecType: TypeAlias = LocalDist | Security | str | None
 ActionType: TypeAlias = Callable[[Command, Session, CommandState | None], None]
 DepsType: TypeAlias = MutableMapping[str, PkgSpecType]
 ConfType: TypeAlias = MutableMapping[str, object]
+CommandDecoratorType: TypeAlias = Callable[[type[Command]], type[Command]]
 
 CommonArgsKey: TypeAlias = Literal["name"]
 CommandArgsOnlyKey: TypeAlias = Literal[
