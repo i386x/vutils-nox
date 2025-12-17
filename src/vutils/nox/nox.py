@@ -15,6 +15,7 @@ from nox.sessions import _normalize_path
 from nox.sessions import SessionRunner as NoxSessionRunner
 
 from vutils.nox.command import Command
+import vutils.nox.sessions as _
 
 
 class SessionRunner(NoxSessionRunner):

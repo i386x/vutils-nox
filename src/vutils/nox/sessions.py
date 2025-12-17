@@ -8,11 +8,14 @@
 #
 """Predefined sessions, commands, and configuration."""
 
+from collections.abc import Iterable, Sequence
 import shutil
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generator, Unpack
+
+from nox.sessions import Session
 
 from vutils.nox.command import (
-    KW_ACTIONS, KW_DESCRIPTION, KW_ENVNAME, KW_NAME, Command
+    KW_ACTIONS, KW_DESCRIPTION, KW_ENVNAME, KW_NAME, Command, CommandState
 )
 from vutils.nox.decorators import add, cfg, dep, KW_TAGS
 from vutils.nox.utils import (
@@ -25,14 +28,10 @@ from vutils.nox.utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, MutableSequence, Sequence, Unpack
+    from collections.abc import MutableSequence
     import os
-    from typing import Generator
-
-    from nox.sessions import Session
 
     from vutils.nox import MatrixArgs, StrPath
-    from vutils.nox.command import CommandState
 
 #: Run linters, recreate environment tag
 LINT_R_TAG: str = "lint-r"
@@ -48,7 +47,7 @@ INSIDE_CI: bool = inside_ci()
 ALL_PYTHONS: Sequence[str] = project_pythons() if not INSIDE_CI else []
 
 
-def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str]]:
+def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str], None, None]:
     """
     Create a generator that yields Python versions pairs.
 
@@ -62,7 +61,7 @@ def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str]]:
         yield (pyver, pyver.replace(".", ""))
 
 
-def ci_matrix(**exts: Unpack(MatrixArgs)) -> Generator[MatrixArgs]:
+def ci_matrix(**exts: Unpack["MatrixArgs"]) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for CI.
 
@@ -85,7 +84,7 @@ class Dummy(Command):
     __slots__ = ()
 
 
-def purge_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+def purge_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Purge` command.
 
@@ -140,7 +139,7 @@ class Build(Command):
             session.run(KW_PYTHON, "-m", "build")
 
 
-def audit_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+def audit_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Audit` command.
 
@@ -160,8 +159,8 @@ def audit_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
         yield from ci_matrix()
 
 
-@dep("pip-audit")
 @add(matrix=audit_matrix(ALL_PYTHONS), reuse_venv=True, default=False)
+@dep("pip-audit")
 class Audit(Command):
     """Audit Python environment for vulnerabilities."""
 
@@ -177,7 +176,7 @@ class Audit(Command):
         session.run(KW_PYTHON, "-m", "pip_audit", "--progress-spinner", "off")
 
 
-def pytest_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+def pytest_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Pytest` command.
 
@@ -197,11 +196,11 @@ def pytest_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
         yield from ci_matrix()
 
 
-@dep(".")
-@dep("pytest")
-@dep("pytest-cov")
-@dep("vutils-testing")
 @add(matrix=pytest_matrix(ALL_PYTHONS), reuse_venv=True, default=False)
+@dep("vutils-testing")
+@dep("pytest-cov")
+@dep("pytest")
+@dep(".")
 class Pytest(Command):
     """Run unit tests."""
 
@@ -223,7 +222,7 @@ class Pytest(Command):
         )
 
 
-def coveralls_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+def coveralls_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Coveralls` command.
 
@@ -236,16 +235,16 @@ def coveralls_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
         yield {
             KW_NAME: f"cov{ver}",
             KW_ENVNAME: f"py{ver}",
-            KW_DESCRIPTION: f"Report code coverage for `py{ver}`"
+            KW_DESCRIPTION: f"Report code coverage for `py{ver}`",
             KW_PYTHON: pyver,
         }
     if not pythons:
         yield from ci_matrix()
 
 
-@dep("coveralls")
-@cfg("report::exclude_also", ["^if TYPE_CHECKING:$"])
 @add(matrix=coveralls_matrix(ALL_PYTHONS), reuse_venv=True, default=False)
+@cfg("report::exclude_also", ["^if TYPE_CHECKING:$"])
+@dep("coveralls")
 class Coveralls(Command):
     """Report code coverage."""
 
@@ -270,7 +269,7 @@ class Coveralls(Command):
         session.run(*args)
 
 
-def test_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
+def test_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Test` command.
 
@@ -291,27 +290,27 @@ def test_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
         yield from ci_matrix(actions=["audit", "pytest", "coveralls"])
 
 
-@dep("./dist")
 @add(
     matrix=test_matrix(ALL_PYTHONS),
     reuse_venv=True,
     default=True,
     tags=[TESTS_TAG],
 )
+@dep("./dist")
 class Test(Command):
     """Run tests."""
 
     __slots__ = ()
 
 
-@dep("black")
-@cfg("tool::black::line-length", 79)
 @add(
     matrix=ci_matrix(),
     reuse_venv=True,
     default=True,
     tags=[LINT_TAG, LINT_R_TAG],
 )
+@cfg("tool::black::line-length", 79)
+@dep("black")
 class Black(Command):
     """Run formatting checks."""
 

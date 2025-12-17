@@ -8,31 +8,29 @@
 #
 """Definitions of commands."""
 
-from collections.abc import MutableMapping
+from collections.abc import Callable, Iterable, Mapping, MutableMapping, MutableSequence
 import configparser
 import contextlib
 import hashlib
 import optparse
+import os
 import pathlib
-from typing import TYPE_CHECKING, overload
+from typing import TYPE_CHECKING, overload, ClassVar, Generator, Literal, TypeGuard, TypeVar, Unpack
 
+from nox._decorators import Func
 from nox.logger import logger
+from nox.registry import get
+from nox.sessions import Session
+from nox.virtualenv import CondaEnv, VirtualEnv
 from pydantic import BaseModel, ConfigDict
 from setuptools import find_namespace_packages, find_packages
 from tomli_w import dump as toml_dump
 
 from vutils.nox.pkgspec import InstallMode, LocalDist, Security
-from vutils.nox.utils import (
-    data2str, mergeinsert, normalize_actions, normalize_description
-)
+from vutils.nox.utils import data2str, identical, mergeinsert
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, MutableSequence
     import io
-    import os
-    from typing import ClassVar, Generator, Literal, TypeVar, Unpack
-
-    from nox.sessions import Session
 
     from vuitls.nox import (
         ActionType,
@@ -47,7 +45,7 @@ if TYPE_CHECKING:
         StrPath,
     )
 
-    T = TypeVar("T", bound=Security|str)
+T = TypeVar("T", bound=Security|str)
 
 #: Parameters, keys, and properties
 KW_ACTIONS: Literal["actions"] = "actions"
@@ -118,6 +116,8 @@ class CommandState:
         By calling this method changes made so far are discarded and replaced
         with the recent data from the persistent storage.
         """
+        if isinstance(session.virtualenv, (CondaEnv, VirtualEnv)) and session.virtualenv.reuse_existing:
+            return
         storage: os.PathLike[str] = self.__get_storage(session)
         if not storage.is_file():
             return
@@ -140,7 +140,7 @@ class CommandState:
         with storage.open("w") as fobj:
             fobj.write(self.__data.model_dump_json(warnings="error"))
 
-    def changed_deps(self, command: Command) -> bool:
+    def changed_deps(self, command: "Command") -> bool:
         """
         Check whether the set of packages to install has been changed.
 
@@ -164,7 +164,7 @@ class CommandState:
         new_checksum: str = command.checksum(KW_DEPS)
         changed: bool = command.name not in cmd2sum
         checksum: str = cmd2sum.setdefault(command.name, new_checksum)
-        logger.log(
+        logger.info(
             "DEPENDENCIES: %s: %s (%s)",
             command.name,
             new_checksum,
@@ -179,7 +179,7 @@ class CommandState:
             return True
         return changed
 
-    def changed_conf(self, command: Command) -> bool:
+    def changed_conf(self, command: "Command") -> bool:
         """
         Check whether the configuration has been changed.
 
@@ -194,7 +194,7 @@ class CommandState:
         new_checksum: str = command.checksum(KW_CONF)
         changed: bool = config not in cfg2sum
         checksum: str = cfg2sum.setdefault(config, new_checksum)
-        logger.log(
+        logger.info(
             "CONFIGURATION: %s: %s (%s)",
             config,
             new_checksum,
@@ -241,7 +241,7 @@ class Container:
         self.__checksum = None
         self.checksum()
 
-    def items(self) -> Generator[str]:
+    def items(self) -> Generator[str, None, None]:
         """
         Yield items needed to compute the container data checksum.
 
@@ -267,7 +267,7 @@ class Container:
 
 
 def add_deps_to(
-    container: Dependencies, deps: Mapping[str, Iterable[T]], kind: T
+    container: "Dependencies", deps: Mapping[str, Iterable[T]], kind: T
 ) -> None:
     """
     Add dependencies to the container.
@@ -279,10 +279,9 @@ def add_deps_to(
         (this is needed to distinct between an update and ordinary dependency)
     """
     pkg: str
-    specs: Iterable[T]
-    for pkg, specs in deps:
+    for pkg in deps:
         spec: T
-        for spec in specs:
+        for spec in deps[pkg]:
             container.add(pkg, spec)
         else:
             container.add(pkg, kind)
@@ -311,7 +310,7 @@ class Dependencies(Container):
         self.__local = None
         self.__install_args = []
 
-    def add(self, name: str, item: PkgSpecType) -> None:
+    def add(self, name: str, item: "PkgSpecType") -> None:
         """
         Add a dependency to the container.
 
@@ -366,7 +365,7 @@ class Dependencies(Container):
             if self.__local is None or self.__local <= item:
                 self.__local = item
 
-    def add_myself_to(self, container: Dependencies) -> None:
+    def add_myself_to(self, container: "Dependencies") -> None:
         """
         Add the content of this container to :xarg:`container`.
 
@@ -389,8 +388,8 @@ class Dependencies(Container):
         depset: Mapping[str, Iterable[Security | str]]
         for depset in (self.__updates, self.__main):
             pkg: str
-            specs: Iterable[Security | str]
-            for pkg, specs in depset:
+            for pkg in depset:
+                specs: Iterable[Security | str] = depset[pkg]
                 if specs:
                     self.__install_args.extend(
                         [f"{pkg} {spec}" for spec in specs]
@@ -399,7 +398,7 @@ class Dependencies(Container):
                     self.__install_args.append(pkg)
         Container.commit(self)
 
-    def items(self) -> Generator[str]:
+    def items(self) -> Generator[str, None, None]:
         """
         Yield install arguments.
 
@@ -415,7 +414,7 @@ class Dependencies(Container):
     def install(
         self,
         session: Session,
-        command: Command,
+        command: "Command",
         mode: InstallMode = InstallMode.NOINSTALL,
     ) -> None:
         """
@@ -427,7 +426,7 @@ class Dependencies(Container):
         """
         if self.__local:
             self.__local.install(session, mode=mode)
-        if command.changed(KW_DEPS) or mode > InstallMode.NOINSTALL:
+        if self.__install_args and (command.changed(KW_DEPS) or mode > InstallMode.NOINSTALL):
             session.install(*self.__install_args, silent=False)
 
 
@@ -435,7 +434,7 @@ class Configuration(Container):
     """Configuration container."""
 
     #: The configuration data
-    __data: ConfType
+    __data: "ConfType"
 
     __slots__ = ("__data",)
 
@@ -453,7 +452,7 @@ class Configuration(Container):
         """
         mergeinsert(self.__data, item, name)
 
-    def items(self) -> Generator[str]:
+    def items(self) -> Generator[str, None, None]:
         """
         Yield configuration converted to :class:`str`.
 
@@ -488,7 +487,7 @@ class Configuration(Container):
         else:
             raise ValueError(f"{path.name}: Format is not supported")
 
-    def config(self, command: Command) -> os.PathLike[str]:
+    def config(self, command: "Command") -> os.PathLike[str]:
         """
         Prepare and get the configuration file for the command.
 
@@ -508,12 +507,78 @@ class Configuration(Container):
         return path
 
 
+def is_action_callable(action: "ActionType | str") -> TypeGuard["ActionType"]:
+    """
+    Check whether the action is callable.
+
+    :param action: The action
+    :return: :obj:`True` if the action is callable
+    """
+    return callable(action)
+
+
+def normalize_actions(
+    actions: Iterable["ActionType | str"]
+) -> Generator["ActionType", None, None]:
+    """
+    Normalize actions.
+
+    :param actions: The list of actions or their names (can be intermixed)
+    :return: the generator yielding actions that are only callables
+    :raises KeyError: if an action is a name and that name is not present in
+        the Nox registry
+    :raises TypeError: if the action taken from the Nox registry is not an
+        instance of :class:`~.Command`
+
+    If an action is a callable it is yielded as it is. Otherwise, it is looked
+    up in the Nox registry and the found callable is then yielded.
+    """
+    registry: Mapping[str, object] = get()
+
+    action: ActionType | str
+    for action in actions:
+        if is_action_callable(action):
+            yield action
+        if action not in registry:
+            raise KeyError(f"`{action}` is not in Nox registry")
+        command: object = registry[action]
+        if isinstance(command, Func):
+            command = command.func
+        if not isinstance(command, Command):
+            raise TypeError(f"{command!r} is not a command")
+        yield command
+
+
+def normalize_description(desc: str) -> str:
+    """
+    Normalize description.
+
+    :param desc: The description
+    :return: the normalized description
+
+    A description is normalized following these steps:
+
+    #. select the first line
+    #. make the first letter lowercase
+    #. if the description ends with the dot is neither the part of ellipsis nor
+       the entire description is the dot
+
+       - remove the dot
+    """
+    desc = desc.strip().split("\n")[0].strip()
+    if len(desc) > 0:
+        desc = desc[0].lower() + desc[1:]
+        if len(desc) > 1 and desc[-1] == "." and desc[-2] != ".":
+            desc = desc[:-1].strip()
+    return desc
+
+
 class CommandOptsParser(optparse.OptionParser):
     """Command options parser."""
 
     __slots__ = ()
 
-    def __init__(self, command: Command) -> None:
+    def __init__(self, command: "Command") -> None:
         """
         Initialize the parser.
 
@@ -522,7 +587,7 @@ class CommandOptsParser(optparse.OptionParser):
         optparse.OptionParser.__init__(
             self, prog=command.name, description=command.description
         )
-        self.set_defaults(*{KW_INSTALL_MODE: None})
+        self.set_defaults(**{KW_INSTALL_MODE: None})
         self.add_option(
             "-r",
             "--reinstall",
@@ -548,7 +613,7 @@ class CommandOptsParser(optparse.OptionParser):
         )
 
     def process_args(
-        self, container: CommandProps, args: MutableSequence[str]
+        self, container: "CommandProps", args: MutableSequence[str]
     ) -> None:
         """
         Parse, process, and store arguments.
@@ -605,31 +670,31 @@ class Command:
     """
 
     #: Command definitions (dependencies and configuration)
-    DEFS: ClassVar[CommandDefs] = {KW_DEPS: {}, KW_CONF: {}}
+    DEFS: ClassVar["CommandDefs"] = {KW_DEPS: {}, KW_CONF: {}}
 
-    #: The command state
-    __state: CommandState
     #: Actions to be executed when the command runs
-    __actions: MutableSequence[ActionType]
+    __actions: MutableSequence["ActionType"]
     #: The command dependencies container
     __dependencies: Dependencies
     #: The command configuration container
     __configuration: Configuration
     #: The command properties
-    __properties: CommandProps
+    __properties: "CommandProps"
     #: The option parser
     __parser: CommandOptsParser
+    #: The command state
+    __state: CommandState
 
     __slots__ = (
-        "__state",
         "__actions",
         "__dependencies",
         "__configuration",
         "__properties",
         "__parser",
+        "__state",
     )
 
-    def __collect_actions(self, kwargs: CommandArgs) -> None:
+    def __collect_actions(self, kwargs: "CommandArgs") -> None:
         """
         Collect actions from :xarg:`kwargs`.
 
@@ -642,14 +707,14 @@ class Command:
 
     @overload
     @classmethod
-    def __collect_defs(cls, kind: Literal["deps"]) -> DepsType: ...
+    def __collect_defs(cls, kind: Literal["deps"]) -> "DepsType": ...
 
     @overload
     @classmethod
-    def __collect_defs(cls, kind: Literal["conf"]) -> ConfType: ...
+    def __collect_defs(cls, kind: Literal["conf"]) -> "ConfType": ...
 
     @classmethod
-    def __collect_defs(cls, kind: str) -> DepsType | ConfType:
+    def __collect_defs(cls, kind: str) -> "DepsType | ConfType":
         """
         Collect a definition based on :xarg:`kind`.
 
@@ -681,9 +746,9 @@ class Command:
         self.traverse(callback, shallow=True)
 
         pkg: str
-        spec: PkgSpecType
-        for pkg, spec in type(self).__collect_defs(KW_DEPS):
-            self.__dependencies.add(pkg, spec)
+        deps: DepsType = type(self).__collect_defs(KW_DEPS)
+        for pkg in deps:
+            self.__dependencies.add(pkg, deps[pkg])
         self.__dependencies.commit()
 
     def __initialize_configuration(self) -> None:
@@ -691,12 +756,12 @@ class Command:
         self.__configuration = Configuration()
 
         key: str
-        value: object
-        for key, value in type(self).__collect_defs(KW_CONF):
-            self.__configuration.add(key, value)
+        conf: ConfType = type(self).__collect_defs(KW_CONF)
+        for key in conf:
+            self.__configuration.add(key, conf[key])
         self.__configuration.commit()
 
-    def __collect_properties(self, props: CommandProps) -> None:
+    def __collect_properties(self, props: "CommandProps") -> None:
         """
         Collect properties from :xarg:`props`.
 
@@ -704,7 +769,7 @@ class Command:
         """
         name: str
         desc: str
-        if len(self.__actions) == 1 and self.__actions[0] is not self.run:
+        if len(self.__actions) == 1 and not identical(self.__actions[0], self.run):
             name = self.__actions[0].__name__
             desc = self.__actions[0].__doc__
         else:
@@ -726,7 +791,7 @@ class Command:
         props.setdefault(KW_INSTALL_MODE, InstallMode.NOINSTALL)
         self.__properties = props
 
-    def __init__(self, **kwargs: Unpack(CommandArgs)) -> None:
+    def __init__(self, **kwargs: Unpack["CommandArgs"]) -> None:
         """
         Initialize the command.
 
@@ -778,17 +843,17 @@ class Command:
           positional arguments passed to any :class:`.Command`-based session
           (type ``nox -s dummy -- --help`` for more info)
         * ``statefile``, specifying the name of a file where the command state
-          is stored; if not given then ``".state"`` is used
+          is stored; if not given then ``".state-{envname}"`` is used
         """
-        self.__state = CommandState(kwargs.pop(KW_STATEFILE, ".state"))
         self.__collect_actions(kwargs)
         self.__initialize_dependencies()
         self.__initialize_configuration()
         self.__collect_properties(kwargs)
         self.__parser = CommandOptsParser(self)
+        self.__state = CommandState(kwargs.pop(KW_STATEFILE, f".state-{self.envname}"))
 
     def traverse(
-        self, callback: Callable[[Command], None], shallow: bool = False
+        self, callback: Callable[["Command"], None], shallow: bool = False
     ) -> None:
         """
         Traverse subcommands in the first order manner.
@@ -900,8 +965,8 @@ class Command:
             raise KeyError(detail)
         return self.__properties[KW_CACHEDIR]
 
-    @properties
-    def opts(self) -> CommandOptions:
+    @property
+    def opts(self) -> "CommandOptions":
         """
         Get the command options.
 
@@ -937,7 +1002,7 @@ class Command:
             else self.__configuration.checksum()
         )
 
-    def config(self, fname: str | None = None) -> StrPath | None:
+    def config(self, fname: str | None = None) -> "StrPath | None":
         """
         Prepare and get the configuration file for this command.
 
@@ -966,7 +1031,7 @@ class Command:
     @contextlib.contextmanager
     def context(
         self, session: Session, state: CommandState | None = None
-    ) -> Generator[None]:
+    ) -> Generator[None, None, None]:
         """
         Create a context for running commands.
 

@@ -8,7 +8,8 @@
 #
 """Decorators."""
 
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Literal, TypeGuard, TypeVar, Unpack
 
 from nox.registry import session_decorator
 
@@ -25,17 +26,16 @@ from vutils.nox.command import (
     KW_PACKAGE,
     KW_ROOTDIR,
     KW_STATEFILE,
+    Command,
 )
 from vutils.nox.pkgspec import DistKind, LocalDist, Security
 from vutils.nox.utils import container_at_path, KW_PYTHON
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, MutableMapping
-    from typing import Literal, TypeGuard, TypeVar, Unpack
+    from collections.abc import Callable, MutableMapping, MutableSequence
 
     from vutils.nox import (
         AddArgs,
-        Command,
         CommandArgs,
         CommandArgsKey,
         CommandArgsOnlyKey,
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
         SessionArgsOnlyKey,
     )
 
-    T = TypeVar("T", CommandArgs, SessionArgs)
+T = TypeVar("T", "CommandArgs", "SessionArgs")
 
 #: Keys and parameters names
 KW_DEFAULT: Literal["default"] = "default"
@@ -88,7 +88,27 @@ SESSION_ONLY_KWARGS: Iterable[str] = (
 )
 
 
-def __is_common_kwarg(kwarg: str) -> TypeGuard[CommonArgsKey]:
+def __ensure_defs(cls: type[Command]) -> None:
+    """
+    Ensure that ``DEFS`` is in every subclass.
+
+    :param cls: The :class:`~vutils.nox.command.Command`-based class
+
+    Ensure that every base of :xarg:`cls`, which is a subclass of
+    :class:`~vutils.nox.command.Command`, has its own
+    :attr:`~vutils.nox.command.Command.DEFS` class variable. This makes sure
+    that dependencies and configuration are added correctly to user-defined
+    commands and not cumulated in the base class.
+    """
+    bases: MutableSequence[type[Command]] = [base for base in cls.__mro__ if issubclass(base, Command)]
+    origin: type[Command] = bases.pop()
+    while bases:
+        if bases[-1].DEFS is origin.DEFS:
+            bases[-1].DEFS = {KW_DEPS: {}, KW_CONF: {}}
+        origin = bases.pop()
+
+
+def __is_common_kwarg(kwarg: str) -> TypeGuard["CommonArgsKey"]:
     """
     Check whether the key-value argument is a common one.
 
@@ -99,7 +119,7 @@ def __is_common_kwarg(kwarg: str) -> TypeGuard[CommonArgsKey]:
     return kwarg in COMMON_KWARGS
 
 
-def __is_command_only_kwarg(kwarg: str) -> TypeGuard[CommandArgsOnlyKey]:
+def __is_command_only_kwarg(kwarg: str) -> TypeGuard["CommandArgsOnlyKey"]:
     """
     Check whether the key-value argument is a command-only one.
 
@@ -110,7 +130,7 @@ def __is_command_only_kwarg(kwarg: str) -> TypeGuard[CommandArgsOnlyKey]:
     return kwarg in COMMAND_ONLY_KWARGS
 
 
-def __is_session_only_kwarg(kwarg: str) -> TypeGuard[SessionArgsOnlyKey]:
+def __is_session_only_kwarg(kwarg: str) -> TypeGuard["SessionArgsOnlyKey"]:
     """
     Check whether the key-value argument is a session-only one.
 
@@ -121,7 +141,7 @@ def __is_session_only_kwarg(kwarg: str) -> TypeGuard[SessionArgsOnlyKey]:
     return kwarg in SESSION_ONLY_KWARGS
 
 
-def __split_kwargs(kwargs: AddArgs) -> tuple[CommandArgs, SessionArgs]:
+def __split_kwargs(kwargs: "AddArgs") -> tuple["CommandArgs", "SessionArgs"]:
     """
     Split key-value arguments into session and command ones.
 
@@ -148,7 +168,7 @@ def __split_kwargs(kwargs: AddArgs) -> tuple[CommandArgs, SessionArgs]:
     return (command_kwargs, session_kwargs)
 
 
-def __is_command_kwarg(kwarg: str) -> TypeGuard[CommandArgsKey]:
+def __is_command_kwarg(kwarg: str) -> TypeGuard["CommandArgsKey"]:
     """
     Check whether the key-value argument is a command one.
 
@@ -159,7 +179,7 @@ def __is_command_kwarg(kwarg: str) -> TypeGuard[CommandArgsKey]:
     return kwarg in COMMON_KWARGS or kwarg in COMMAND_ONLY_KWARGS
 
 
-def __is_session_kwarg(kwarg: str) -> TypeGuard[SessionArgsKey]:
+def __is_session_kwarg(kwarg: str) -> TypeGuard["SessionArgsKey"]:
     """
     Check whether the key-value argument is a session one.
 
@@ -172,7 +192,7 @@ def __is_session_kwarg(kwarg: str) -> TypeGuard[SessionArgsKey]:
 
 def __is_command_kwargs(
     unused_kwargs: T, keys: Iterable[str]
-) -> TypeGuard[CommandArgs]:
+) -> TypeGuard["CommandArgs"]:
     """
     Check whether key-value arguments are command key-value arguments.
 
@@ -188,7 +208,7 @@ def __is_command_kwargs(
 
 def __is_session_kwargs(
     unused_kwargs: T, keys: Iterable[str]
-) -> TypeGuard[SessionArgs]:
+) -> TypeGuard["SessionArgs"]:
     """
     Check whether key-value arguments are session key-value arguments.
 
@@ -202,7 +222,7 @@ def __is_session_kwargs(
     return set(keys).issubset(set(COMMON_KWARGS) | set(SESSION_ONLY_KWARGS))
 
 
-def __combine(kwargs: T, other: MatrixArgs, allowed: Iterable[str]) -> T:
+def __combine(kwargs: T, other: "MatrixArgs", allowed: Iterable[str]) -> T:
     """
     Combine :xarg:`kwargs` with :xarg:`other`.
 
@@ -211,8 +231,7 @@ def __combine(kwargs: T, other: MatrixArgs, allowed: Iterable[str]) -> T:
     :param allowed: The list of names of allowed key-value arguments
     :return: the copy of :xarg:`kwargs` merged with :xarg:`other`
     :raises ValueError: when a key-value argument from :xarg:`other` is already
-        present in :xarg:`kwargs` or if it is not in :xarg:`allowed` (note that
-        key-value arguments from :const:`.COMMON_KWARGS` are always allowed)
+        present in :xarg:`kwargs`
     :raises TypeError: in case of an invalid combination of :xarg:`kwargs` and
         :xarg:`allowed`
     """
@@ -223,7 +242,7 @@ def __combine(kwargs: T, other: MatrixArgs, allowed: Iterable[str]) -> T:
         if key in new_kwargs:
             raise ValueError(f"`{key}` is already specified")
         if key not in COMMON_KWARGS and key not in allowed:
-            raise ValueError(f"`{key}` is not allowed here")
+            continue
         if (
             __is_command_kwarg(key)
             and __is_command_kwargs(new_kwargs, allowed)
@@ -239,7 +258,7 @@ def __combine(kwargs: T, other: MatrixArgs, allowed: Iterable[str]) -> T:
     return new_kwargs
 
 
-def add(**kwargs: Unpack[AddArgs]) -> CommandDecoratorType:
+def add(**kwargs: Unpack["AddArgs"]) -> "CommandDecoratorType":
     """
     Create a decorator that adds the command to the Nox session registry.
 
@@ -321,13 +340,14 @@ def add(**kwargs: Unpack[AddArgs]) -> CommandDecoratorType:
         :param command: The :class:`~vutils.nox.command.Command`-based class
         :return: the :xarg:`command`
         """
+        __ensure_defs(command)
         __add(command, **kwargs)
         return command
 
     return decorator
 
 
-def __add(command: type[Command], **kwargs: Unpack[AddArgs]) -> None:
+def __add(command: type[Command], **kwargs: Unpack["AddArgs"]) -> None:
     """
     Add a command to the Nox session registry.
 
@@ -347,7 +367,7 @@ def __add(command: type[Command], **kwargs: Unpack[AddArgs]) -> None:
         )(command(**__combine(command_kwargs, row, COMMAND_ONLY_KWARGS)))
 
 
-def dep(depname: str, spec: str | None = "") -> CommandDecoratorType:
+def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
     """
     Create a decorator that adds a dependency to the command.
 
@@ -388,6 +408,7 @@ def dep(depname: str, spec: str | None = "") -> CommandDecoratorType:
         :return: the :xarg:`command`
         :raises ValueError: when arguments are ill-formed
         """
+        __ensure_defs(command)
         __dep(command, depname, spec)
         return command
 
@@ -434,7 +455,7 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
     command.DEFS[KW_DEPS][pkg_name] = pkg_spec
 
 
-def cfg(path: str, item: object) -> CommandDecoratorType:
+def cfg(path: str, item: object) -> "CommandDecoratorType":
     """
     Create a decorator that adds a configuration item to the command.
 
@@ -466,6 +487,7 @@ def cfg(path: str, item: object) -> CommandDecoratorType:
         :raises TypeError: when the configuration item cannot be added to the
             command at the location specified by the path
         """
+        __ensure_defs(command)
         __cfg(command, path, item)
         return command
 

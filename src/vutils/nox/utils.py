@@ -8,33 +8,45 @@
 #
 """Helpers and utilities."""
 
-from collections.abc import Sequence
+from collections.abc import (
+    Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+)
 import os
 import os.path
 import pathlib
-from typing import TYPE_CHECKING
+import types
+from typing import TYPE_CHECKING, Generator, Literal, TypeGuard
 
 from nox.project import load_toml
+from nox.sessions import Session
 from pydantic import BaseModel
 
-from vutils.nox.command import Command
-
 if TYPE_CHECKING:
-    from collections.abc import (
-        Iterable, Mapping, MutableMapping, MutableSequence
-    )
-    from typing import Generator, Literal, TypeGuard
-
-    from nox.registry import get
-    from nox.sessions import Session
-
-    from vutils.nox import ActionType, StrPath
+    from vutils.nox import StrPath
 
 #: Constants and keywords
 CI_ENV_VARS: Iterable[str] = ("CI", "GITHUB_TOKEN")
 DATAPATH_SEP: str = "::"
 KW_PYTHON: Literal["python"] = "python"
 PYPROJECT_TOML: str = "pyproject.toml"
+
+
+def identical(lhs: object, rhs: object) -> bool:
+    """
+    Check whether two objects are identical.
+
+    :param lhs: The left-hand side object
+    :param rhs: The right-hand side object
+    :return: :obj:`True` if both arguments are considered identical
+
+    If both :xarg:`lhs` and :xarg:`rhs` are methods, check whether their
+    ``__func__`` attributes are identical (since ``o.m is o.m`` is always
+    :obj:`False` for methods). Otherwise, use the ``is`` operator to perform
+    the check.
+    """
+    if isinstance(lhs, types.MethodType) and isinstance(rhs, types.MethodType):
+        return identical(lhs.__func__, rhs.__func__)
+    return lhs is rhs
 
 
 def is_dict(obj: object) -> TypeGuard[Mapping[object, object]]:
@@ -57,7 +69,7 @@ def is_list(obj: object) -> TypeGuard[Iterable[object]]:
     return isinstance(obj, list)
 
 
-def data2str(data: object) -> Generator[str]:
+def data2str(data: object) -> Generator[str, None, None]:
     """
     Convert structured data into string.
 
@@ -72,12 +84,11 @@ def data2str(data: object) -> Generator[str]:
         yield "{"
 
         key: object
-        value: object
-        for key, value in data:
+        for key in data:
             if not isinstance(key, str):
                 raise TypeError("Only text keys are allowed")
             yield f"{key}="
-            yield from data2str(value)
+            yield from data2str(data[key])
             yield ","
         yield "}"
     elif is_list(data):
@@ -173,7 +184,7 @@ def mergeinsert(
         container[key] = item
 
 
-def resolve_path(path: StrPath) -> os.PathLike[str]:
+def resolve_path(path: "StrPath") -> os.PathLike[str]:
     """
     Resolve :xarg:`path`.
 
@@ -191,70 +202,6 @@ def relative_path(path: os.PathLike[str]) -> os.PathLike[str]:
     :return: :xarg:`path` relative to the current working directory
     """
     return path.relative_to(pathlib.Path.cwd(), walk_up=True)
-
-
-def is_action_callabel(action: ActionType | str) -> TypeGuard[ActionType]:
-    """
-    Check whether the action is callable.
-
-    :param action: The action
-    :return: :obj:`True` if the action is callable
-    """
-    return callable(action)
-
-
-def normalize_actions(
-    actions: Iterable[ActionType | str]
-) -> Generator[ActionType]:
-    """
-    Normalize actions.
-
-    :param actions: The list of actions or their names (can be intermixed)
-    :return: the generator yielding actions that are only callables
-    :raises KeyError: if an action is a name and that name is not present in
-        the Nox registry
-    :raises TypeError: if the action taken from the Nox registry is not an
-        instance of :class:`~vutils.nox.command.Command`
-
-    If an action is a callable it is yielded as it is. Otherwise, it is looked
-    up in the Nox registry and the found callable is then yielded.
-    """
-    registry: Mapping[str, object] = get()
-
-    action: ActionType | str
-    for action in actions:
-        if is_action_callable(action):
-            yield action
-        if action not in registry:
-            raise KeyError(f"`{action}` is not in Nox registry")
-        command: object = registry[action]
-        if not isinstance(command, Command):
-            raise TypeError(f"{command!r} is not a command")
-        yield command
-
-
-def normalize_description(desc: str) -> str:
-    """
-    Normalize description.
-
-    :param desc: The description
-    :return: the normalized description
-
-    A description is normalized following these steps:
-
-    #. select the first line
-    #. make the first letter lowercase
-    #. if the description ends with the dot is neither the part of ellipsis nor
-       the entire description is the dot
-
-       - remove the dot
-    """
-    desc = desc.strip().split("\n")[0].strip()
-    if len(desc) > 0:
-        desc = desc[0].lower() + desc[1:]
-        if len(desc) > 1 and desc[-1] == "." and desc[-2] != ".":
-            desc = desc[:-1].strip()
-    return desc
 
 
 class Project(BaseModel):

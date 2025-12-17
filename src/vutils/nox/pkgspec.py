@@ -10,9 +10,11 @@
 
 import enum
 import functools
+import os
 import pathlib
 from typing import TYPE_CHECKING
 
+from nox.sessions import Session
 from pkginfo import Wheel
 
 from vutils.nox.utils import (
@@ -26,9 +28,6 @@ from vutils.nox.utils import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, MutableSequence
-    import os
-
-    from nox.sessions import Session
 
     from vutils.nox import StrPath
 
@@ -68,7 +67,7 @@ class LocalDist:
     __slots__ = ("path", "kind", "__discovered")
 
     def __init__(
-        self, path: StrPath = ".", kind: DistKind = DistKind.SDIST
+        self, path: "StrPath" = ".", kind: DistKind = DistKind.SDIST
     ) -> None:
         """
         Initialize the instance.
@@ -80,7 +79,7 @@ class LocalDist:
         self.kind = kind
         self.__discovered = None
 
-    def __eq__(self, other: LocalDist) -> bool:
+    def __eq__(self, other: "LocalDist") -> bool:
         """
         Test whether this object is equal to :xarg:`other`.
 
@@ -90,7 +89,7 @@ class LocalDist:
         """
         return self.kind == other.kind
 
-    def __lt__(self, other: LocalDist) -> bool:
+    def __lt__(self, other: "LocalDist") -> bool:
         """
         Test whether this object is less than :xarg:`other`.
 

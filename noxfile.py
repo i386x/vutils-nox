@@ -7,7 +7,7 @@
 # SPDX-License-Identifier: MIT
 #
 # /// script
-# dependencies = ["-e ."]
+# dependencies = ["nox", "pkginfo", "pydantic", "setuptools", "tomli_w"]
 # ///
 """The Noxfile."""
 
