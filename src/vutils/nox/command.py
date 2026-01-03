@@ -8,14 +8,29 @@
 #
 """Definitions of commands."""
 
-from collections.abc import Callable, Iterable, Mapping, MutableMapping, MutableSequence
+from collections.abc import (
+    Callable,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+)
 import configparser
 import contextlib
 import hashlib
 import optparse
 import os
 import pathlib
-from typing import TYPE_CHECKING, overload, ClassVar, Generator, Literal, TypeGuard, TypeVar, Unpack
+from typing import (
+    TYPE_CHECKING,
+    overload,
+    ClassVar,
+    Generator,
+    Literal,
+    TypeGuard,
+    TypeVar,
+    Unpack,
+)
 
 from nox._decorators import Func
 from nox.logger import logger
@@ -27,7 +42,7 @@ from setuptools import find_namespace_packages, find_packages
 from tomli_w import dump as toml_dump
 
 from vutils.nox.pkgspec import InstallMode, LocalDist, Security
-from vutils.nox.utils import data2str, identical, mergeinsert
+from vutils.nox.utils import DANGER_ENV_VARS, setenv, data2str, identical, mergeinsert
 
 if TYPE_CHECKING:
     import io
@@ -45,7 +60,7 @@ if TYPE_CHECKING:
         StrPath,
     )
 
-T = TypeVar("T", bound=Security|str)
+T = TypeVar("T", bound=Security | str)
 
 #: Parameters, keys, and properties
 KW_ACTIONS: Literal["actions"] = "actions"
@@ -116,7 +131,11 @@ class CommandState:
         By calling this method changes made so far are discarded and replaced
         with the recent data from the persistent storage.
         """
-        if isinstance(session.virtualenv, (CondaEnv, VirtualEnv)) and session.virtualenv.reuse_existing:
+        if (
+            isinstance(session.virtualenv, (CondaEnv, VirtualEnv))
+            and not session.virtualenv.reuse_existing
+        ):
+            logger.info("state %s cleared", self.__name)
             return
         storage: os.PathLike[str] = self.__get_storage(session)
         if not storage.is_file():
@@ -168,10 +187,14 @@ class CommandState:
             "DEPENDENCIES: %s: %s (%s)",
             command.name,
             new_checksum,
-            "added" if changed else (
-                f"changed from {checksum}"
-                if new_checksum != checksum
-                else "unchanged"
+            (
+                "added"
+                if changed
+                else (
+                    f"changed from {checksum}"
+                    if new_checksum != checksum
+                    else "unchanged"
+                )
             ),
         )
         if new_checksum != checksum:
@@ -198,10 +221,14 @@ class CommandState:
             "CONFIGURATION: %s: %s (%s)",
             config,
             new_checksum,
-            "added" if changed else (
-                f"changed from {checksum}"
-                if new_checksum != checksum
-                else "unchanged"
+            (
+                "added"
+                if changed
+                else (
+                    f"changed from {checksum}"
+                    if new_checksum != checksum
+                    else "unchanged"
+                )
             ),
         )
         if new_checksum != checksum:
@@ -424,10 +451,13 @@ class Dependencies(Container):
         :param command: The command owning this container
         :param mode: The installation mode
         """
-        if self.__local:
-            self.__local.install(session, mode=mode)
-        if self.__install_args and (command.changed(KW_DEPS) or mode > InstallMode.NOINSTALL):
-            session.install(*self.__install_args, silent=False)
+        with setenv(session, DANGER_ENV_VARS):
+            if self.__local:
+                self.__local.install(session, mode=mode)
+            if (
+                command.changed(KW_DEPS) or mode > InstallMode.NOINSTALL
+            ) and self.__install_args:
+                session.install(*self.__install_args, silent=False)
 
 
 class Configuration(Container):
@@ -518,7 +548,7 @@ def is_action_callable(action: "ActionType | str") -> TypeGuard["ActionType"]:
 
 
 def normalize_actions(
-    actions: Iterable["ActionType | str"]
+    actions: Iterable["ActionType | str"],
 ) -> Generator["ActionType", None, None]:
     """
     Normalize actions.
@@ -633,7 +663,7 @@ class CommandOptsParser(optparse.OptionParser):
         opts: optparse.Values
         rest: Iterable[str]
         opts, rest = self.parse_args(args)
-        del args[:len(args) - len(rest)]
+        del args[: len(args) - len(rest)]
         mode: InstallMode = getattr(opts, KW_INSTALL_MODE, None)
         if mode == InstallMode.NOINSTALL:
             if args:
@@ -657,7 +687,8 @@ class Command:
     Bring Nox user experience closer to Tox.
 
     The base class for user defined Nox commands/sessions, providing several
-    features not included in ordinary Nox sessions. With this class users can:
+    features not included in ordinary Nox sessions. With this class, a user
+    can:
 
     * specify the list of command dependencies that will be automatically
       installed
@@ -769,7 +800,9 @@ class Command:
         """
         name: str
         desc: str
-        if len(self.__actions) == 1 and not identical(self.__actions[0], self.run):
+        if len(self.__actions) == 1 and not identical(
+            self.__actions[0], self.run
+        ):
             name = self.__actions[0].__name__
             desc = self.__actions[0].__doc__
         else:
@@ -790,6 +823,26 @@ class Command:
         props.setdefault(KW_CONFIG, None)
         props.setdefault(KW_INSTALL_MODE, InstallMode.NOINSTALL)
         self.__properties = props
+
+    def __initialize_state(self, statefile: str) -> None:
+        """
+        Create the command state and propagate it to subcommands.
+
+        :param statefile: The name of the command state storage
+
+        This method must be called after the all subcommands are gathered.
+        """
+        self.set_state(CommandState(statefile))
+
+        def callback(cmd: Command) -> None:
+            """
+            Assign the command state to the subcommand.
+
+            :param cmd: The subcommand
+            """
+            cmd.set_state(self.__state)
+
+        self.traverse(callback)
 
     def __init__(self, **kwargs: Unpack["CommandArgs"]) -> None:
         """
@@ -850,7 +903,9 @@ class Command:
         self.__initialize_configuration()
         self.__collect_properties(kwargs)
         self.__parser = CommandOptsParser(self)
-        self.__state = CommandState(kwargs.pop(KW_STATEFILE, f".state-{self.envname}"))
+        self.__initialize_state(
+            kwargs.pop(KW_STATEFILE, f".state-{self.envname}")
+        )
 
     def traverse(
         self, callback: Callable[["Command"], None], shallow: bool = False
@@ -877,6 +932,14 @@ class Command:
             are going to be stored
         """
         self.__dependencies.add_myself_to(container)
+
+    def set_state(self, state: CommandState) -> None:
+        """
+        Set the command state.
+
+        :param state: The command state
+        """
+        self.__state = state
 
     @property
     def __name__(self) -> str:
@@ -959,7 +1022,7 @@ class Command:
         """
         if KW_CACHEDIR not in self.__properties:
             detail: str = (
-                f"{self.name}: `chachedir` property has not been yet set"
+                f"{self.name}: `chachedir` property has not been set yet"
                 " (probably accessed before the command has been invoked)"
             )
             raise KeyError(detail)
@@ -1016,47 +1079,45 @@ class Command:
         self.__properties[KW_CONFIG] = fname
         return self.__configuration.config(self)
 
-    def run(self, session: Session, state: CommandState | None = None) -> None:
+    def run(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Run the command body.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
 
         Users can override this method to perform their specific commands. By
-        default this method is no-op. If :xarg:`state` is not :obj:`None`, this
-        means that this command is a subcommand of some other command.
+        default this method is no-op.
         """
 
     @contextlib.contextmanager
     def context(
-        self, session: Session, state: CommandState | None = None
+        self, session: Session, is_subcommand: bool
     ) -> Generator[None, None, None]:
         """
         Create a context for running commands.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
+        :return: the generator object
 
-        Save the old command state, cache directory, and installation mode. If
-        :xarg:`state` is not :obj:`None`, set the command state to
-        :xarg:`state`. Otherwise, load the command state from the persistent
-        storage. If the cache directory is not set, use the one provided by
+        Save the old cache directory and installation mode. If this command is
+        not a subcommand, load the command state from the persistent storage.
+        If the cache directory is not set, use the one provided by
         :xarg:`session`. Set the installation mode based on command line
         arguments passed to this command. After the command and its subcommands
-        are finished, restore previous state. If :xarg:`state` is :obj:`None`,
-        store the command state to the persistent storage.
+        are finished, restore the previous state and store the command state to
+        the persistent storage in case this command is not a subcommand.
         """
-        old_state: CommandState = self.__state
         cachedir: os.PathLike[str] | None = self.__properties.get(
             KW_CACHEDIR, None
         )
         install_mode: InstallMode = self.__properties[KW_INSTALL_MODE]
 
         try:
-            if state is not None:
-                self.__state = state
-            else:
+            if not is_subcommand:
                 self.__state.load(session)
             if cachedir is None:
                 self.__properties[KW_CACHEDIR] = session.cache_dir
@@ -1066,35 +1127,31 @@ class Command:
             self.__properties[KW_INSTALL_MODE] = install_mode
             if cachedir is None:
                 del self.__properties[KW_CACHEDIR]
-            if state is not None:
-                self.__state = old_state
-            else:
+            if not is_subcommand:
                 self.__state.store(session)
 
-    def __call__(
-        self, session: Session, state: CommandState | None = None
-    ) -> None:
+    def __call__(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Run the command.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
 
         Install dependencies and then run the specified actions. If no actions
         were given during the command initialization, execute
         :meth:`~.Command.run`.
 
         Note that dependencies are not installed if this command is a
-        subcommand (this is indicated by :xarg:`state` not being :obj:`None`)
-        of some other command, since all dependencies were gathered and
-        installed on the top of the command tree.
+        subcommand of some other command, since all dependencies were gathered
+        and installed on the top of the command tree.
         """
-        with self.context(session, state):
-            if state is None:
+        with self.context(session, is_subcommand):
+            if not is_subcommand:
                 self.__dependencies.install(
                     session, self, mode=self.opts[KW_INSTALL_MODE]
                 )
 
             action: ActionType
             for action in self.__actions:
-                action(session, self.__state)
+                action(session, True)

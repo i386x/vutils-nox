@@ -52,9 +52,6 @@ version = {attr = "vutils.nox.version.__version__"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.black]
-line-length = 79
-
 [tool.isort]
 multi_line_output = 3
 include_trailing_comma = true

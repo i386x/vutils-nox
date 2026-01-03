@@ -9,26 +9,93 @@
 """Helpers and utilities."""
 
 from collections.abc import (
-    Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+    Iterable,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    Sequence,
 )
+import contextlib
 import os
 import os.path
 import pathlib
+import re
+import shutil
 import types
-from typing import TYPE_CHECKING, Generator, Literal, TypeGuard
+from typing import TYPE_CHECKING, Generator, Literal, TypeIs
 
 from nox.project import load_toml
 from nox.sessions import Session
-from pydantic import BaseModel
+from nox.virtualenv import CondaEnv, VirtualEnv
+from pyproject_metadata import StandardMetadata
 
 if TYPE_CHECKING:
     from vutils.nox import StrPath
 
-#: Constants and keywords
-CI_ENV_VARS: Iterable[str] = ("CI", "GITHUB_TOKEN")
-DATAPATH_SEP: str = "::"
+#: Keywords
 KW_PYTHON: Literal["python"] = "python"
+
+#: File names
 PYPROJECT_TOML: str = "pyproject.toml"
+
+#: Environment variables
+EV_PYTHONPATH: str = "PYTHONPATH"
+CI_ENV_VARS: Iterable[str] = ("CI", "GITHUB_TOKEN")
+DANGER_ENV_VARS: Mapping[str, None] = {EV_PYTHONPATH: None}
+
+#: The separator between segments of a configuration item
+DATAPATH_SEP: str = "::"
+
+#: The regular expression for identifying import failures in the output of a
+#: Python script
+IMPORT_ERROR_RE: re.Pattern = re.compile(
+    "Traceback|ModuleNotFoundError|ImportError"
+)
+
+#: Lists of attributes required by implementing interfaces
+MAPPING_ATTRS: Iterable[str] = (
+    "__contains__",
+    "__iter__",
+    "__len__",
+    "__getitem__",
+    "__eq__",
+    "__ne__",
+    "keys",
+    "values",
+    "items",
+    "get",
+)
+MUTABLE_MAPPING_ATTRS: Iterable[str] = (
+    "__contains__",
+    "__iter__",
+    "__len__",
+    "__getitem__",
+    "__setitem__",
+    "__delitem__",
+    "__eq__",
+    "__ne__",
+    "keys",
+    "values",
+    "items",
+    "get",
+    "pop",
+    "popitem",
+    "setdefault",
+    "update",
+    "clear",
+)
+
+#: Selected metadata fields names
+ATTR_KEY: str = "attr"
+DYNAMIC_KEY: str = "dynamic"
+FILE_KEY: str = "file"
+FIND_KEY: str = "find"
+PACKAGES_KEY: str = "packages"
+PROJECT_KEY: str = "project"
+SETUPTOOLS_KEY: str = "setuptools"
+TOOL_KEY: str = "tool"
+VERSION_KEY: str = "version"
+WHERE_KEY: str = "where"
 
 
 def identical(lhs: object, rhs: object) -> bool:
@@ -49,24 +116,63 @@ def identical(lhs: object, rhs: object) -> bool:
     return lhs is rhs
 
 
-def is_dict(obj: object) -> TypeGuard[Mapping[object, object]]:
-    """
-    Narrow the type of :xarg:`obj` to the mapping.
-
-    :param obj: The object
-    :return: :obj:`True` if :xarg:`obj` has the :class:`dict` type
-    """
-    return isinstance(obj, dict)
-
-
-def is_list(obj: object) -> TypeGuard[Iterable[object]]:
+def is_iterable(obj: object) -> TypeIs[Iterable[object]]:
     """
     Narrow the type of :xarg:`obj` to the iterable.
 
     :param obj: The object
-    :return: :obj:`True` if :xarg:`obj` has the :class:`list` type
+    :return: :obj:`True` if :xarg:`obj` is an iterable
     """
-    return isinstance(obj, list)
+    return hasattr(obj, "__iter__")
+
+
+def is_iterable_of_strings(obj: object) -> TypeIs[Iterable[str]]:
+    """
+    Narrow the type of :xarg:`obj` to the iterable of strings.
+
+    :param obj: The object
+    :return: :obj:`True` if :xarg:`obj` is an iterable of strings
+    """
+    if is_iterable(obj):
+        return all(isinstance(item, str) for item in obj)
+    return False
+
+
+def __hasattrs(obj: object, attrs: Iterable[str]) -> bool:
+    """
+    Check whether the object has all of the required attributes.
+
+    :param obj: The object
+    :param attrs: Required attributes
+    :return: :obj:`True` if :xarg:`obj` has all attributes from :xarg:`attrs`
+    """
+    return all(hasattr(obj, attr) for attr in attrs)
+
+
+def is_mapping(
+    obj: object, attrs: Iterable[str] = MAPPING_ATTRS
+) -> TypeIs[Mapping[object, object]]:
+    """
+    Narrow the type of :xarg:`obj` to the mapping.
+
+    :param obj: The object
+    :param attrs: Required attributes
+    :return: :obj:`True` if :xarg:`obj` is a mapping
+    """
+    return __hasattrs(obj, attrs)
+
+
+def is_mutable_mapping(
+    obj: object, attrs: Iterable[str] = MUTABLE_MAPPING_ATTRS
+) -> TypeIs[MutableMapping[object, object]]:
+    """
+    Narrow the type of :xarg:`obj` to the mutable mapping.
+
+    :param obj: The object
+    :param attrs: Required attributes
+    :return: :obj:`True` if :xarg:`obj` is a mutable mapping
+    """
+    return __hasattrs(obj, attrs)
 
 
 def data2str(data: object) -> Generator[str, None, None]:
@@ -76,11 +182,11 @@ def data2str(data: object) -> Generator[str, None, None]:
     :param data: The structured data
     :return: the generator object yielding the string representation of
         :xarg:`data`
-    :raises TypeError: when :xarg:`data` are ill-formed
+    :raises TypeError: when :xarg:`data` contain items with a wrong type
 
     Can be used to obtain the checksum of the data.
     """
-    if is_dict(data):
+    if is_mapping(data, ("__iter__", "__getitem__")):
         yield "{"
 
         key: object
@@ -91,7 +197,7 @@ def data2str(data: object) -> Generator[str, None, None]:
             yield from data2str(data[key])
             yield ","
         yield "}"
-    elif is_list(data):
+    elif is_iterable(data):
         yield "["
 
         item: object
@@ -119,7 +225,7 @@ def container_at_path(
     :param path: The path to a container within data
     :return: the found container and the last part of the path as a key to this
         container
-    :raises TypeError: if the path cannot be fully traversed
+    :raises TypeError: when :xarg:`data` contain items with a wrong type
 
     Traverse :xarg:`data` alongside :xarg:`path`, return a container that is
     located at the element just before the last element of :xarg:`path`. The
@@ -142,7 +248,9 @@ def container_at_path(
         if part not in container:
             container[part] = {}
         item: object = container[part]
-        if not is_dict(item):
+        if not is_mutable_mapping(
+            item, ("__contains__", "__getitem__", "__setitem__")
+        ):
             raise TypeError(f"{DATAPATH_SEP.join(visited)}: Not a mapping")
         container = item
     return (container, key)
@@ -176,7 +284,10 @@ def mergeinsert(
     if item is RemoveMarker:
         if key in container:
             del container[key]
-    elif key in container and is_dict(container[key]) and is_dict(item):
+    elif key in container and is_mutable_mapping(
+        container[key],
+        ("__contains__", "__getitem__", "__setitem__", "__delitem__")
+    ) and is_mapping(item, ("__iter__", "__getitem__")):
         ikey: object
         for ikey in item:
             mergeinsert(container[key], item[ikey], ikey)
@@ -191,7 +302,8 @@ def resolve_path(path: "StrPath") -> os.PathLike[str]:
     :param path: The path to be resolved
     :return: the resolved path
     """
-    return pathlib.Path(os.path.expandvars(os.path.expanduser(path))).resolve()
+    pth: os.PathLike[str] = pathlib.Path(path)
+    return pathlib.Path(os.path.expandvars(pth.expanduser())).resolve()
 
 
 def relative_path(path: os.PathLike[str]) -> os.PathLike[str]:
@@ -204,30 +316,15 @@ def relative_path(path: os.PathLike[str]) -> os.PathLike[str]:
     return path.relative_to(pathlib.Path.cwd(), walk_up=True)
 
 
-class Project(BaseModel):
-    """The partial ``pyproject.toml``'s ``[project]`` data model."""
-
-    name: str
-    classifiers: Sequence[str]
-
-
-class PyProject(BaseModel):
-    """The partial ``pyproject.toml`` data model."""
-
-    project: Project
-
-
-def load_project(path: os.PathLike[str] | None = None) -> Project:
+def load_pyproject(path: os.PathLike[str] | None) -> Mapping[str, object]:
     """
-    Load the ``[project]`` section from ``pyproject.toml``.
+    Load ``pyproject.toml``.
 
-    :param path: The path to the ``pyproject.toml`` file or similar
-    :return: the ``[project]`` section
-    :raises OSError: if the ``pyproject.toml`` file or similar cannot be opened
-        for reading
-    :raises ValueError: if the ``pyproject.toml`` file or similar is corrupted
-    :raises pydantic.ValidationError: if the ``pyproject.toml`` file or similar
-        is corrupted
+    :param path: The path to the ``pyproject.toml``-like file or to the
+        directory where the ``pyproject.toml`` file is present
+    :return: the content of ``pyproject.toml``
+    :raises OSError: if the ``pyproject.toml``-like file cannot be opened for
+        reading
 
     If :xarg:`path` is :obj:`None`, ``pyproject.toml`` is looked for in the
     current working directory. If :xarg:`path` is a directory,
@@ -239,7 +336,228 @@ def load_project(path: os.PathLike[str] | None = None) -> Project:
         path = pathlib.Path.cwd()
     if path.is_dir():
         path = path / PYPROJECT_TOML
-    return PyProject.model_validate(load_toml(path)).project
+    return load_toml(path)
+
+
+def __error(errcls: type[Exception], pth: Sequence[str], detail: str) -> None:
+    """
+    Raise an error.
+
+    :param errcls: The error class
+    :param pth: The path to the origin of an error
+    :param detail: The error detail
+    :raises Exception: when invoked
+
+    The helper for :func:`~.__bad_type`.
+    """
+    loc: str = ".".join(pth)
+    raise errcls(f"`{loc}`{detail}")
+
+
+def __bad_type(pth: Sequence[str], expected: str) -> None:
+    """
+    Raise a type error.
+
+    :param pth: The path to the origin of an error
+    :param expected: The name of the expected type
+    :raises TypeError: when invoked
+
+    The helper for :func:`~.get_version` and :func:`~.get_dynamic`.
+    """
+    __error(TypeError, pth, f" must be {expected}")
+
+
+def get_version(pyproject: Mapping[str, object]) -> str | None:
+    """
+    Get the value of ``project.version``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the version if it is present or :obj:`None`
+    :raises TypeError: when the ``pyproject.toml`` data contain items with a
+        wrong type
+    """
+    if PROJECT_KEY not in pyproject:
+        return None
+    pth: MutableSequence[str] = [PROJECT_KEY]
+    project_sec: object = pyproject[PROJECT_KEY]
+    if not is_mapping(project_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if VERSION_KEY not in project_sec:
+        return None
+    pth.append(VERSION_KEY)
+    version: object = project_sec[VERSION_KEY]
+    if not isinstance(version, str) or len(version) == 0:
+        __bad_type(pth, "a non-empty string")
+    return version
+
+
+def get_dynamic(
+    pyproject: Mapping[str, object], field: str
+) -> tuple[str, str] | None:
+    """
+    Get the details about a dynamically specified field.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :param field: The dynamically specified field name
+    :return: the pair containing the directive name and the value associated
+        with that directive or :obj:`None` if :xarg:`field` is not dynamic
+    :raises TypeError: when the ``pyproject.toml`` data contain items with a
+        wrong type
+    :raises ValueError: when the ``pyproject.toml`` data contain items with a
+        wrong value
+
+    Get the value of :xarg:`field` from the ``tool.setuptools.dynamic``
+    section. The first element of the returned pair is the name of a directive
+    (either ``attr`` or ``file``) and the second element is the value
+    associated with the directive (i.e. a fully qualified attribute name or a
+    file name, respectively).
+    """
+    if TOOL_KEY not in pyproject:
+        return None
+    pth: MutableSequence[str] = [TOOL_KEY]
+    tool_sec: object = pyproject[TOOL_KEY]
+    if not is_mapping(tool_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if SETUPTOOLS_KEY not in tool_sec:
+        return None
+    pth.append(SETUPTOOLS_KEY)
+    setuptools_sec: object = tool_sec[SETUPTOOLS_KEY]
+    if not is_mapping(setuptools_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if DYNAMIC_KEY not in setuptools_sec:
+        return None
+    pth.append(DYNAMIC_KEY)
+    dynamic_sec: object = setuptools_sec[DYNAMIC_KEY]
+    if not is_mapping(dynamic_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if field not in dynamic_sec:
+        return None
+    pth.append(field)
+    record: object = dynamic_sec[field]
+    if not is_mapping(record, ("__len__", "__iter__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if len(record) != 1:
+        __error(ValueError, pth, " size must be exactly 1")
+    result: tuple[str, str] | None = None
+    key: str
+    for key in record:
+        if key not in (ATTR_KEY, FILE_KEY):
+            __error(ValueError, pth, f": invalid directive `{key}`")
+        value: object = record[key]
+        if not isinstance(value, str) or len(value) == 0:
+            __bad_type(pth + [key], "a non-empty string")
+        result = (key, value)
+    return result
+
+
+def get_where(pyproject: Mapping[str, object]) -> Iterable[str] | None:
+    """
+    Get the value of ``tool.setuptools.packages.find.where``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the list of directories, relative to the ``pyproject.toml``-like
+        file directory, where to look for packages to be distributed or
+        :obj:`None` if no such list is specified
+    :raises TypeError: when the ``pyproject.toml`` data contain items with a
+        wrong type
+    """
+    if TOOL_KEY not in pyproject:
+        return None
+    pth: MutableSequence[str] = [TOOL_KEY]
+    tool_sec: object = pyproject[TOOL_KEY]
+    if not is_mapping(tool_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if SETUPTOOLS_KEY not in tool_sec:
+        return None
+    pth.append(SETUPTOOLS_KEY)
+    setuptools_sec: object = tool_sec[SETUPTOOLS_KEY]
+    if not is_mapping(setuptools_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if PACKAGES_KEY not in setuptools_sec:
+        return None
+    pth.append(PACKAGES_KEY)
+    packages_sec: object = setuptools_sec[PACKAGES_KEY]
+    if not is_mapping(packages_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if FIND_KEY not in packages_sec:
+        return None
+    pth.append(FIND_KEY)
+    find_sec: object = packages_sec[FIND_KEY]
+    if not is_mapping(find_sec, ("__contains__", "__getitem__")):
+        __bad_type(pth, "a mapping")
+    if WHERE_KEY not in find_sec:
+        return None
+    pth.append(WHERE_KEY)
+    where: object = find_sec[WHERE_KEY]
+    if not is_iterable_of_strings(where):
+        __bad_type(pth, "an iterable of strings")
+    return where
+
+
+def resolve_dynamic_version(
+    session: Session, pyproject: Mapping[str, object]
+) -> str:
+    """
+    Resolve dynamic version from ``pyproject.toml`` data.
+
+    :param session: The Nox session
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the resolved version
+    :raises TypeError: when the ``pyproject.toml`` data contain items with a
+        wrong type
+    :raises ValueError: when the version cannot be resolved due to invalid,
+        insufficient, or missing data
+    :raises OSError: when the file with the version cannot be opened for
+        reading
+    """
+    dynver: tuple[str, str] | None = get_dynamic(pyproject, VERSION_KEY)
+    if dynver is None:
+        raise ValueError("Missing version")
+
+    directive: str
+    value: str
+    directive, value = dynver
+    if directive == ATTR_KEY:
+        parts: Sequence[str] = value.rsplit(".", 1)
+        if len(parts) != 2:
+            raise ValueError(f"`{value}` has no module name part")
+        pypath: str | None = None
+        where: Iterable[str] | None = get_where(pyproject)
+        if where is not None:
+            where = filter(None, where)
+        if where:
+            pypath = os.pathsep.join(where)
+        with setenv(session, {EV_PYTHONPATH: pypath}):
+            version: str = run_script(
+                session, f"from {parts[0]} import {parts[1]} as x; print(x)"
+            )
+            if not version or IMPORT_ERROR_RE.search(version):
+                raise ValueError(f"Invalid version: `{version}`")
+            return version
+    elif directive == FILE_KEY:
+        path: os.PathLike[str] = resolve_path(value)
+        if not path.is_file():
+            raise OSError(f"`{path}` is not a file")
+        fobj: io.TextIOWrapper
+        with path.open() as fobj:
+            version: str = fobj.read().strip()
+            if not version:
+                raise ValueError("Invalid version (empty string)")
+            return version
+    else:
+        raise ValueError(f"Invalid directive: `{directive}`")
+
+
+def get_metadata(pyproject: Mapping[str, object]) -> StandardMetadata:
+    """
+    Extract metadata from the ``pyproject.toml`` content.
+
+    :param pyproject: The content of the ``pyproject.toml``-like file
+    :return: the metadata
+    :raises pyproject_metadata.errors.ConfigurationError: when the content of
+        the ``pyproject.toml``-like file is corrupted
+    """
+    return StandardMetadata.from_pyproject(pyproject)
 
 
 def inside_ci() -> bool:
@@ -259,7 +577,7 @@ def project_pythons() -> Sequence[str]:
     """
     return [
         classifier.split()[-1]
-        for classifier in load_project().classifiers
+        for classifier in get_metadata(load_pyproject()).classifiers
         if classifier.startswith("Programming Language :: Python :: 3.")
     ]
 
@@ -271,6 +589,68 @@ def dist_dir() -> os.PathLike[str]:
     :return: the path to the ``./dist`` directory
     """
     return pathlib.Path.cwd() / "dist"
+
+
+def rm_dist_dir() -> None:
+    """Remove ``./dist`` directory."""
+    path: os.PathLike[str] = dist_dir()
+    if path.is_dir():
+        shutil.rmtree(path)
+
+
+def remove_build_artifacts() -> None:
+    """Remove artifacts produced by ``python -m build``."""
+    src_dir: os.PathLike[str] = pathlib.Path.cwd() / "src"
+    if not src_dir.is_dir():
+        return
+    egg_info: os.PathLike[str]
+    for egg_info in src_dir.glob("*.egg-info"):
+        if egg_info.is_dir():
+            shutil.rmtree(egg_info)
+
+
+def envvar_is_unset(session: Session, name: str) -> None:
+    """
+    Assert that the environment variable is not set.
+
+    :param session: The Nox session
+    :param name: The name of the environment variable
+    :raises RuntimeError: when the environment variable is not unset
+    """
+    if name in session.env and session.env[name] is None:
+        return
+    if name in session.env or name in os.environ:
+        raise RuntimeError(f"Environment variable {name} is not unset")
+
+
+@contextlib.contextmanager
+def setenv(
+    session: Session, env: Mapping[str, str | None]
+) -> Generator[None, None, None]:
+    """
+    Set the environment variables for this context.
+
+    :param session: The Nox session
+    :param env: The mapping with environment variables to be set
+    :return: the generator object
+
+    If an environment variable has :obj:`None` value, the environment variable
+    is unset for this context.
+    """
+    key: str
+    backup: Mapping[str, str | None] = {
+        key: session.env[key] for key in env if key in session.env
+    }
+
+    try:
+        session.env.update(env)
+        yield
+    finally:
+        for key in env:
+            if key not in backup:
+                del session.env[key]
+            else:
+                session.env[key] = backup[key]
 
 
 def run_script(session: Session, script: str) -> str:
@@ -314,6 +694,26 @@ def is_installed(session: Session, package: str) -> bool:
     return run_script(session, script).lower() == "true"
 
 
+def is_installed_as_editable(session: Session, package: str) -> bool:
+    """
+    Check whether the package is installed as editable.
+
+    :param session: The Nox session
+    :param package: The package
+    :return: :obj:`True` if :xarg:`package` is installed as editable
+
+    Editable packages do not have their source files installed and/or they
+    contain a special file starting with ``__editable__.``.
+    """
+    script: str = (
+        "from importlib.metadata import distribution as d;"
+        " from operator import attrgetter as ag; print("
+        f'"__init__.py" not in map(ag("name"), d("{package}").files) or any('
+        f'x.name.startswith("__editable__.") for x in d("{package}").files))'
+    )
+    return run_script(session, script).lower() == "true"
+
+
 def package_dir(session: Session, package: str) -> os.PathLike[str]:
     """
     Return the directory where the package's content is installed.
@@ -345,3 +745,16 @@ def packages_dir(session: Session, package: str) -> os.PathLike[str]:
             return pkgdir
         pkgdir = pkgdir.parent
     raise OSError(detail)
+
+
+def upgrade_pip(session: Session) -> None:
+    """
+    Upgrade ``pip`` to its latest version.
+
+    :param session: The Nox session
+    """
+    if (
+        isinstance(session.virtualenv, (CondaEnv, VirtualEnv))
+        and session.venv_backend != "uv"
+    ):
+        session.install("-U", "pip")

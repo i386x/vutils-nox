@@ -100,7 +100,9 @@ def __ensure_defs(cls: type[Command]) -> None:
     that dependencies and configuration are added correctly to user-defined
     commands and not cumulated in the base class.
     """
-    bases: MutableSequence[type[Command]] = [base for base in cls.__mro__ if issubclass(base, Command)]
+    bases: MutableSequence[type[Command]] = [
+        base for base in cls.__mro__ if issubclass(base, Command)
+    ]
     origin: type[Command] = bases.pop()
     while bases:
         if bases[-1].DEFS is origin.DEFS:
@@ -243,14 +245,12 @@ def __combine(kwargs: T, other: "MatrixArgs", allowed: Iterable[str]) -> T:
             raise ValueError(f"`{key}` is already specified")
         if key not in COMMON_KWARGS and key not in allowed:
             continue
-        if (
-            __is_command_kwarg(key)
-            and __is_command_kwargs(new_kwargs, allowed)
+        if __is_command_kwarg(key) and __is_command_kwargs(
+            new_kwargs, allowed
         ):
             new_kwargs[key] = other[key]
-        elif (
-            __is_session_kwarg(key)
-            and __is_session_kwargs(new_kwargs, allowed)
+        elif __is_session_kwarg(key) and __is_session_kwargs(
+            new_kwargs, allowed
         ):
             new_kwargs[key] = other[key]
         else:

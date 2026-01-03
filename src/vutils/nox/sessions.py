@@ -6,16 +6,90 @@
 #
 # SPDX-License-Identifier: MIT
 #
-"""Predefined sessions, commands, and configuration."""
+"""
+Predefined sessions, commands, and configurations.
+
+CI workflow:
+
+* Purge:
+  * create new environment
+  * upgrade ``pip`` if necessary
+  * remove ``./dist``
+* Build:
+  * build wheel
+* Install:
+  * install wheel
+* Test:
+  * run tests
+* Coverage:
+  * report coverage to ``coveralls.io``
+* Audit:
+  * audit environment
+  * audit dependencies from the installed packages dump, e.g. produced by
+    ``pip freeze``
+* Uninstall:
+  * uninstall wheel
+* Setenv:
+  * set ``PYTHONPATH=./src`` for linters
+* Check:
+  * audit local project
+  * check MANIFEST
+  * check wheel using ``twine check --strict``
+* Run linters
+* Build docs
+* Audit:
+  * audit environment
+  * audit dependencies from the installed packages dump, e.g. produced by
+    ``pip freeze``
+
+Local workflow:
+
+* Purge:
+  * create new environment [pyXY, python]
+  * upgrade ``pip`` if necessary [pyXY, python]
+  * remove ``./dist``
+* Build:
+  * build wheel [python]
+* Install:
+  * requires: Build
+  * install wheel [pyXY]
+* Test:
+  * run tests [pyXY]
+* Coverage:
+  * report coverage to a text file [pyXY]
+* Audit:
+  * audit environment [pyXY]
+  * audit dependencies from the installed packages dump, e.g. produced by
+    ``pip freeze`` [pyXY]
+* Uninstall:
+  * uninstall wheel [pyXY]
+* Setenv:
+  * set ``PYTHONPATH=./src`` for linters [python]
+* Check:
+  * audit local project [python]
+  * check MANIFEST [python]
+  * check wheel using ``twine check --strict`` [python]
+* Run linters [python, mypy: pyXY]
+* Build docs [python]
+* Audit:
+  * audit environment [pyXY, python]
+  * audit dependencies from the installed packages dump, e.g. produced by
+    ``pip freeze`` [pyXY, python]
+
+"""
 
 from collections.abc import Iterable, Sequence
-import shutil
 from typing import TYPE_CHECKING, Generator, Unpack
 
 from nox.sessions import Session
 
 from vutils.nox.command import (
-    KW_ACTIONS, KW_DESCRIPTION, KW_ENVNAME, KW_NAME, Command, CommandState
+    KW_ACTIONS,
+    KW_DESCRIPTION,
+    KW_ENVNAME,
+    KW_NAME,
+    Command,
+    CommandState,
 )
 from vutils.nox.decorators import add, cfg, dep, KW_TAGS
 from vutils.nox.utils import (
@@ -24,6 +98,9 @@ from vutils.nox.utils import (
     packages_dir,
     project_pythons,
     relative_path,
+    remove_build_artifacts,
+    rm_dist_dir,
+    upgrade_pip,
     KW_PYTHON,
 )
 
@@ -61,7 +138,9 @@ def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str], None, None]:
         yield (pyver, pyver.replace(".", ""))
 
 
-def ci_matrix(**exts: Unpack["MatrixArgs"]) -> Generator["MatrixArgs", None, None]:
+def ci_matrix(
+    **exts: Unpack["MatrixArgs"],
+) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for CI.
 
@@ -84,7 +163,9 @@ class Dummy(Command):
     __slots__ = ()
 
 
-def purge_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
+def purge_matrix(
+    pythons: Iterable[str],
+) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Purge` command.
 
@@ -110,36 +191,42 @@ class Purge(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, state: CommandState | None = None) -> None:
+    def run(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Perform the purge.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
         """
-        path: os.PathLike[str] = dist_dir()
-        if path.is_dir():
-            shutil.rmtree(path, ignore_errors=True)
+        rm_dist_dir()
+        remove_build_artifacts()
+        upgrade_pip(session)
 
 
 @add(matrix=ci_matrix(), reuse_venv=True, default=True, tags=[TESTS_TAG])
+@dep("build")
 class Build(Command):
     """Build the package."""
 
     __slots__ = ()
 
-    def run(self, session: Session, state: CommandState | None = None) -> None:
+    def run(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Perform the package build.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
         """
         if not dist_dir().is_dir():
             session.run(KW_PYTHON, "-m", "build")
+        remove_build_artifacts()
 
 
-def audit_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
+def audit_matrix(
+    pythons: Iterable[str],
+) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Audit` command.
 
@@ -166,17 +253,20 @@ class Audit(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, state: CommandState | None = None) -> None:
+    def run(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Perform the audit.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
         """
         session.run(KW_PYTHON, "-m", "pip_audit", "--progress-spinner", "off")
 
 
-def pytest_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
+def pytest_matrix(
+    pythons: Iterable[str],
+) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Pytest` command.
 
@@ -206,12 +296,13 @@ class Pytest(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, state: CommandState | None = None) -> None:
+    def run(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Run unit tests.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
         """
         session.run(
             "pytest",
@@ -222,7 +313,9 @@ class Pytest(Command):
         )
 
 
-def coveralls_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
+def coveralls_matrix(
+    pythons: Iterable[str],
+) -> Generator["MatrixArgs", None, None]:
     """
     Create a test matrix for :class:`~.Coveralls` command.
 
@@ -250,12 +343,13 @@ class Coveralls(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, state: CommandState | None = None) -> None:
+    def run(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Report code coverage.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
         """
         coveragerc: StrPath | None = self.config(".coveragerc")
         args: MutableSequence[str] = ["coveralls", f"--rcfile={coveragerc}"]
@@ -295,6 +389,7 @@ def test_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
     reuse_venv=True,
     default=True,
     tags=[TESTS_TAG],
+    requires=["build"],
 )
 @dep("./dist")
 class Test(Command):
@@ -316,12 +411,13 @@ class Black(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, state: CommandState | None = None) -> None:
+    def run(self, session: Session, is_subcommand: bool = False) -> None:
         """
         Run formatting checks.
 
         :param session: The Nox session
-        :param state: The command state
+        :param is_subcommand: The flag indicating whether this command is a
+            subcommand or not
         """
         session.run(
             "black",

@@ -8,37 +8,243 @@
 #
 """Python package specification helpers."""
 
+from collections.abc import Mapping, MutableSequence
+import email.header
 import enum
 import functools
+import importlib.metadata
 import os
 import pathlib
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 from nox.sessions import Session
+from packaging.version import Version
 from pkginfo import Wheel
 
 from vutils.nox.utils import (
+    DYNAMIC_KEY,
+    EV_PYTHONPATH,
     KW_PYTHON,
     PYPROJECT_TOML,
+    VERSION_KEY,
+    dist_dir,
+    envvar_is_unset,
+    get_metadata,
+    get_version,
     is_installed,
-    load_project,
+    is_installed_as_editable,
+    is_mutable_mapping,
+    load_pyproject,
     relative_path,
-    resolve_path,
+    resolve_dynamic_version,
+    remove_build_artifacts,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, MutableSequence
-
     from vutils.nox import StrPath
+
+#: Selected metadata fields names
+AUTHOR_EMAIL_KEY: str = "author"
+AUTHOR_KEY: str = "author_email"
+DESCRIPTION_KEY: str = "description"
+MAINTAINER_EMAIL_KEY: str = "maintainer_email"
+MAINTAINER_KEY: str = "maintainer"
+
+
+def fix_version(
+    metadata: object, session: Session, pyproject: Mapping[str, object]
+) -> None:
+    """
+    Fix the project version.
+
+    :param metadata: The metadata object containing the project or a
+        distribution information
+    :param session: The Nox session
+    :param pyproject: The ``pyproject.toml`` data
+    :raises TypeError: when the metadata object or the ``pyproject.toml`` data
+        contain items with a wrong type
+    :raises ValueError: when the ``pyproject.toml`` data or resolved dynamic
+        data contain an item with an invalid value
+    :raises OSError: when related files cannot be opened for reading
+    """
+    # If `version` is not `None`, `metadata` contains the most recent version
+    if get_version(pyproject) is None:
+        # If `version` is `None`, `metadata` contains a default version so we
+        # need to patch it
+        if not is_mutable_mapping(metadata, ("__setitem__",)):
+            raise TypeError("Metadata are not a mutable mapping")
+        metadata[VERSION_KEY] = resolve_dynamic_version(session, pyproject)
+
+
+def fix_description(metadata: object) -> None:
+    """
+    Fix the ``description`` field in metadata.
+
+    :param metadata: The metadata object containing the project or a
+        distribution information
+    :raises TypeError: when the metadata object is not a mutable mapping
+
+    If ``description`` is empty, remove it from the metadata. This will ensure
+    the compatibility between metadata obtained by different methods and from
+    different sources.
+    """
+    if not is_mutable_mapping(
+        metadata, ("__contains__", "__getitem__", "__delitem__")
+    ):
+        raise TypeError("Metadata must be a mutable mapping")
+    if DESCRIPTION_KEY not in metadata:
+        return
+    if not metadata[DESCRIPTION_KEY]:
+        del metadata[DESCRIPTION_KEY]
+
+
+def fix_people(metadata: object) -> None:
+    """
+    Fix person-like fields in metadata.
+
+    :param metadata: The metadata object containing the project or a
+        distribution information
+    :raises TypeError: when the metadata object is not a mutable mapping or a
+        field has a wrong type
+
+    In person-like fields (``author``, ``author_email``, ``maintainer``, and
+    ``maintainer_email``) replace encoded data (``=?...?=``) with their
+    origins. This will ensure the compatibility between metadata obtained by
+    different methods and from different sources.
+    """
+    if not is_mutable_mapping(
+        metadata, ("__contains__", "__getitem__", "__setitem__")
+    ):
+        raise TypeError("Metadata must be a mutable mapping")
+    field: str
+    for field in (
+        AUTHOR_KEY, AUTHOR_EMAIL_KEY, MAINTAINER_KEY, MAINTAINER_EMAIL_KEY
+    ):
+        if field not in metadata:
+            continue
+        person: object = metadata[field]
+        if not isinstance(person, str):
+            raise TypeError(f"`{field}` must be a string")
+        metadata[field] = str(
+            email.header.make_header(email.header.decode_header(person))
+        )
+
+
+def remove_redundant(metadata: object) -> None:
+    """
+    Remove fields from metadata not needed for comparison.
+
+    :param metadata: The metadata object containing the project or a
+        distribution information
+    :raises TypeError: when the metadata object is not a mutable mapping
+
+    This will ensure the compatibility between metadata obtained by different
+    methods and from different sources.
+    """
+    if not is_mutable_mapping(metadata, ("__contains__", "__delitem__")):
+        raise TypeError("Metadata must be a mutable mapping")
+    if DYNAMIC_KEY in metadata:
+        del metadata[DYNAMIC_KEY]
+
+
+class Metadata:
+    """The project or a distribution metadata wrapper."""
+
+    #: The metadata object in JSON
+    metadata: object
+
+    __slots__ = ("metadata",)
+
+    def __init__(self, metadata: object | None = None) -> None:
+        """
+        Initialize the wrapper.
+
+        :param metadata: The metadata object containing the project or a
+            distribution information
+        """
+        if metadata is None:
+            metadata = {}
+        self.metadata = metadata
+
+    @classmethod
+    def from_pyproject(
+        cls, session: Session, path: os.PathLike[str] | None = None
+    ) -> Self:
+        """
+        Load metadata from the ``pyproject.toml``-like file.
+
+        :param session: The Nox session
+        :param path: The path to the ``pyproject.toml``-like file or to the
+            directory where the ``pyproject.toml`` file is present
+        :return: the instance of :class:`~.Metadata` initialized with the
+            loaded and processed metadata
+        :raises TypeError: when the loaded metadata contain items with a wrong
+            type
+        :raises ValueError: when an item from the loaded metadata have an
+            invalid value
+        :raises OSError: when a requested file cannot be opened for reading
+        """
+        pyproject: Mapping[str, object] = load_pyproject(path)
+        metadata: object = get_metadata(pyproject).as_json()
+        fix_version(metadata, session, pyproject)
+        fix_description(metadata)
+        fix_people(metadata)
+        remove_redundant(metadata)
+        return cls(metadata)
+
+    @classmethod
+    def from_distribution(cls, name: str) -> Self:
+        """
+        Load metadata from the distribution.
+
+        :param name: The name of the installed package
+        :return: the instance of :class:`~.Metadata` initialized with the
+            loaded and processed metadata
+        :raises ~importlib.metadata.PackageNotFoundError: when the package is
+            not present inside the distribution
+        :raises TypeError: when the loaded metadata contain items with a wrong
+            type
+        """
+        metadata: object = importlib.metadata.distribution(name).metadata.json
+        fix_description(metadata)
+        fix_people(metadata)
+        remove_redundant(metadata)
+        return cls(metadata)
+
+    def __eq__(self, other: Self) -> bool:
+        """
+        Compare two metadata wrappers for equality.
+
+        :param other: The other metadata wrapper used for the comparison
+        :return: :obj:`True` if this instance is equal to :xarg:`other`
+
+        Two metadata wrappers are equal if and only if their underlying
+        metadata objects are equal.
+
+        Two metadata objects are equal if all these conditions are satisfied:
+
+        * they are both mappings with the same content
+        * if they are referencing files, these files must be also identical
+        """
 
 
 class DistKind(enum.IntEnum):
     """Python package distribution kind."""
 
-    #: Source distribution, including editable
-    SDIST: int = 1
-    #: Binary distribution, e.g. wheel
-    BDIST: int = 2
+    #: Editable
+    EDITABLE: int = 1
+    #: Wheel
+    WHEEL: int = 2
+
+
+def swap_kind(kind: DistKind) -> DistKind:
+    """
+    Swap kind.
+
+    :param kind: The kind
+    :return: the kind opposite to :xarg:`kind`
+    """
+    return DistKind.EDITABLE if kind == DistKind.WHEEL else DistKind.WHEEL
 
 
 class InstallMode(enum.IntEnum):
@@ -56,30 +262,26 @@ class InstallMode(enum.IntEnum):
 class LocalDist:
     """Python package distribution on the local file system."""
 
-    #: The path to the package
-    path: os.PathLike[str]
-    #: The kind of the package distribution
+    #: The preferred kind of the package distribution to be installed
     kind: DistKind
-    #: Details discovered about the package, containing the real path to the
-    #: package on the local file system and the name of the package
-    __discovered: tuple[os.PathLike[str], str] | None
+    #: The discovered name of the local package distribution
+    __name: str | None
+    #: The discovered wheel
+    __wheel: os.PathLike[str] | None
 
-    __slots__ = ("path", "kind", "__discovered")
+    __slots__ = ("kind", "__name", "__wheel")
 
-    def __init__(
-        self, path: "StrPath" = ".", kind: DistKind = DistKind.SDIST
-    ) -> None:
+    def __init__(self, kind: DistKind = DistKind.EDITABLE) -> None:
         """
         Initialize the instance.
 
-        :param path: The path to the python package
         :param kind: The kind of the package distribution
         """
-        self.path = pathlib.Path(path)
         self.kind = kind
-        self.__discovered = None
+        self.__name = None
+        self.__wheel = None
 
-    def __eq__(self, other: "LocalDist") -> bool:
+    def __eq__(self, other: Self) -> bool:
         """
         Test whether this object is equal to :xarg:`other`.
 
@@ -89,7 +291,7 @@ class LocalDist:
         """
         return self.kind == other.kind
 
-    def __lt__(self, other: "LocalDist") -> bool:
+    def __lt__(self, other: Self) -> bool:
         """
         Test whether this object is less than :xarg:`other`.
 
@@ -99,47 +301,72 @@ class LocalDist:
         """
         return self.kind < other.kind
 
-    def discover(self, session: Session) -> tuple[os.PathLike[str], str]:
+    def __discover_name(self) -> None:
+        """Discover the name of the local package distribution."""
+        if self.__name:
+            return
+        pyproject_toml: os.PathLike[str] = pathlib.Path.cwd() / PYPROJECT_TOML
+        if pyproject_toml.is_file():
+            self.__name = load_project(pyproject_toml).name
+
+    def discover(self) -> None:
         """
-        Discover the real path to the package and its name.
+        Discover installable local package distributions.
+
+        :raises ValueError: when no installable local package distributions
+            were discovered
+
+        Find all wheels inside ``./dist`` directory, select the one with the
+        highest version. If there are more candidates, it is unspecified which
+        one is selected.
+        """
+        self.__discover_name()
+        if self.__name is None:
+            raise ValueError("Missing the local package distribution name")
+        if self.__wheel:
+            return
+        path: os.PathLike[str] = dist_dir()
+        if not path.is_dir():
+            return
+
+        wheels: MutableSequence[tuple[os.PathLike[str], Wheel]] = []
+        whl: os.PathLike[str]
+        for whl in path.glob("*.whl"):
+            wheel: Wheel = Wheel(whl)
+            if wheel.name is None or wheel.name != self.__name:
+                continue
+           wheels.append((whl, wheel))
+
+        def keyfunc(item: tuple[os.PathLike[str], Wheel]) -> Version:
+            """
+            Convert an item to the comparable object.
+
+            :param item: The item
+            :return: the comparable object
+            """
+            ver: str | None = item[1].version
+            return Version("0.0.0" if ver is None else ver)
+
+        wheels.sort(key=keyfunc)
+        if len(wheels) == 0:
+            raise ValueError(f"No matching *.whl found at `{path}`")
+        self.__wheel = wheels[-1][0]
+
+    def resolve_conflicts(self, session: Session) -> None:
+        """
+        Resolve potential conflicts before installation.
 
         :param session: The Nox session
-        :return: the real path to the package and the distribution name of the
-            package
-        :raises ValueError: when the path from where the discovery should start
-            is not an existing directory
-        :raises ValueError: when more than one ``*.whl`` files were discovered
 
-        The discovery prefers editable packages over wheels, that is if there
-        are both ``pyproject.toml`` and ``*.whl`` in the same directory, the
-        name and the path to the package are derived from this
-        ``pyproject.toml`` and its location in the local file system.
-
-        While discovering, only ``pyproject.toml`` and ``*.whl`` files are
-        taken account. More than one ``*.whl`` file is treated as an error.
+        First, remove all possible artifacts produced during ``python -m
+        build`` and ensure ``PYTHONPATH`` is not set. This excludes packages
+        outside the Python virtual environment while querying for installed
+        packages. Next, remove the old package if it was installed from the
+        different kind of distribution.
         """
-        if self.__discovered:
-            return self.__discovered
-        self.path = resolve_path(self.path)
-        if not self.path.is_dir():
-            raise ValueError(f"`{self.path}` is not a directory")
-        source: os.PathLike[str]
-        name: str
-
-        pyproject_toml: os.PathLike[str] = self.path / PYPROJECT_TOML
-        if pyproject_toml.is_file():
-            source = self.path
-            name = load_project(pyproject_toml).name
-        else:
-            wheels: Iterable[os.PathLike[str]] = self.path.glob("*.whl")
-            if len(wheels) != 1:
-                raise ValueError(
-                    f"Exactly one *.whl is expected in `{self.path}`"
-                )
-            source = wheels[0]
-            name = Wheel(source).name
-        self.__discovered = (source, name)
-        return self.__discovered
+        remove_build_artifacts()
+        envvar_is_unset(session, EV_PYTHONPATH)
+        self.remove(session, swap_kind(self.__kind))
 
     def install(
         self, session: Session, mode: InstallMode = InstallMode.NOINSTALL
@@ -153,10 +380,9 @@ class LocalDist:
         Depending on how this package was discovered, it is installed either as
         a wheel or as an editable.
         """
-        source: os.PathLike[str]
-        name: str
+        self.discover()
+        self.resolve_conflicts(session)
 
-        source, name = self.discover(session)
         if mode == InstallMode.FORCE:
             self.remove(session)
         if mode == InstallMode.NOINSTALL and is_installed(session, name):
@@ -171,21 +397,35 @@ class LocalDist:
             args.insert(0, "--force-reinstall")
         session.install(*args, silent=False)
 
-    def remove(self, session: Session) -> None:
+    def remove(self, session: Session, kind: DistKind | None = None) -> None:
         """
-        Remove this package.
+        Remove this package if it is of the specified kind.
 
         :param session: The Nox session
-        """
-        name: str
+        :param kind: The kind of distribution of this package
+        :raises ValueError: when the name of this package is not known
 
-        _, name = self.discover(session)
-        if not is_installed(session, name):
+        If the kind is not given the value passed during this object's
+        initialization is used. If the distribution kind is specified as
+        editable, the package is removed only if it has been installed as
+        editable. Analogously for wheels.
+        """
+        self.__discover_name()
+        if self.__name is None:
+            raise ValueError("Missing the local package distribution name")
+        if kind is None:
+            kind = self.__kind
+        if not is_installed(session, self.__name):
+            return
+        if (
+            is_installed_as_editable(session, self.__name)
+            is not (kind == DistKind.EDITABLE)
+        ):
             return
         cmd: MutableSequence[StrPath] = (
             ["uv"] if session.venv_backend == "uv" else [KW_PYTHON, "-m"]
         )
-        cmd.extend(["pip", "uninstall", name])
+        cmd.extend(["pip", "uninstall", "-y", self.__name])
         session.run(*cmd)
 
     def __call__(
