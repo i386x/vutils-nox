@@ -9,4 +9,4 @@
 """Holds :mod:`vutils.nox` version."""
 
 #: The package version
-__version__: str = "0.0.1"
+__version__: str = "0.0.0"

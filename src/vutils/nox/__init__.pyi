@@ -14,13 +14,12 @@ from typing import Literal, TypedDict
 from nox._typing import Python
 from nox.sessions import Session
 from typing_extensions import TypeAlias
-
 from vutils.nox.command import Command, CommandState
 from vutils.nox.pkgspec import InstallMode, LocalDist, Security
 
 StrPath: TypeAlias = str | PathLike[str]
 
-CommandBaseType: TypeAlias = type[Command] | type[object]
+CommandBaseType: TypeAlias = type[Command | object]
 PkgSpecType: TypeAlias = LocalDist | Security | str | None
 ActionType: TypeAlias = Callable[[Command, Session, CommandState | None], None]
 DepsType: TypeAlias = MutableMapping[str, PkgSpecType]
@@ -33,13 +32,12 @@ CommandArgsOnlyKey: TypeAlias = Literal[
     "description",
     "envname",
     "package",
-    "rootdir",
     "cachedir",
     "config",
     "actions",
     "statefile",
 ]
-CommandArgsKey: TypeAlias = CommonArgsKey | CommonArgsOnlyKey
+CommandArgsKey: TypeAlias = CommonArgsKey | CommandArgsOnlyKey
 SessionArgsOnlyKey: TypeAlias = Literal[
     "python",
     "py",
@@ -62,7 +60,6 @@ class CommandPropsBase(CommandOptions, total=False):
     description: str
     envname: str
     package: str
-    rootdir: PathLike[str]
     cachedir: PathLike[str]
     config: str
 

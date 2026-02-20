@@ -9,7 +9,7 @@
 #
 
 include *.md
-include nox.py
+include noxfile.py
 recursive-include src *.pyi
 recursive-include src py.typed
 graft tests

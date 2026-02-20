@@ -10,12 +10,11 @@
 
 import sys
 
-from nox._decorators import Func
-from nox.sessions import _normalize_path
-from nox.sessions import SessionRunner as NoxSessionRunner
-
-from vutils.nox.command import Command
 import vutils.nox.sessions as _
+from nox._decorators import Func
+from nox.sessions import SessionRunner as NoxSessionRunner
+from nox.sessions import _normalize_path
+from vutils.nox.command import Command
 
 
 class SessionRunner(NoxSessionRunner):
@@ -32,6 +31,18 @@ class SessionRunner(NoxSessionRunner):
         if isinstance(self.func, Func) and isinstance(self.func.func, Command):
             return self.func.func.envname
         return self.friendly_name
+
+    @property
+    def description(self) -> str | None:
+        """
+        Get the description of the session.
+
+        :return: the description of the session or :obj:`None` if no
+            description is provided
+        """
+        if isinstance(self.func, Func) and isinstance(self.func.func, Command):
+            return self.func.func.description
+        return super().description
 
     @property
     def envdir(self) -> str:

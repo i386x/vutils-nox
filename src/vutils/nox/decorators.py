@@ -8,11 +8,10 @@
 #
 """Decorators."""
 
-from collections.abc import Iterable
+from collections.abc import Iterable, MutableMapping, MutableSequence
 from typing import TYPE_CHECKING, Literal, TypeGuard, TypeVar, Unpack
 
 from nox.registry import session_decorator
-
 from vutils.nox.command import (
     KW_ACTIONS,
     KW_CACHEDIR,
@@ -24,16 +23,13 @@ from vutils.nox.command import (
     KW_INSTALL_MODE,
     KW_NAME,
     KW_PACKAGE,
-    KW_ROOTDIR,
     KW_STATEFILE,
     Command,
 )
 from vutils.nox.pkgspec import DistKind, LocalDist, Security
-from vutils.nox.utils import container_at_path, KW_PYTHON
+from vutils.nox.utils import DIST_DIR_NAME, KW_PYTHON, container_at_path
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, MutableMapping, MutableSequence
-
     from vutils.nox import (
         AddArgs,
         CommandArgs,
@@ -63,18 +59,19 @@ KW_TAGS: Literal["tags"] = "tags"
 #: Key-value arguments both common to :class:`nox.sessions.Session` and
 #: :class:`~vutils.nox.command.Command`
 COMMON_KWARGS: Iterable[str] = (KW_NAME,)
+
 #: Key-value arguments used only by :class:`~vutils.nox.command.Command`
 COMMAND_ONLY_KWARGS: Iterable[str] = (
     KW_INSTALL_MODE,
     KW_DESCRIPTION,
     KW_ENVNAME,
     KW_PACKAGE,
-    KW_ROOTDIR,
     KW_CACHEDIR,
     KW_CONFIG,
     KW_ACTIONS,
     KW_STATEFILE,
 )
+
 #: Key-value arguments used only by :class:`nox.sessions.Session`
 SESSION_ONLY_KWARGS: Iterable[str] = (
     KW_PYTHON,
@@ -96,9 +93,9 @@ def __ensure_defs(cls: type[Command]) -> None:
 
     Ensure that every base of :xarg:`cls`, which is a subclass of
     :class:`~vutils.nox.command.Command`, has its own
-    :attr:`~vutils.nox.command.Command.DEFS` class variable. This makes sure
-    that dependencies and configuration are added correctly to user-defined
-    commands and not cumulated in the base class.
+    :attr:`Command.DEFS <vutils.nox.command.Command.DEFS>` class variable. This
+    makes sure that dependencies and configuration are added correctly to
+    user-defined commands and not cumulated in the base class.
     """
     bases: MutableSequence[type[Command]] = [
         base for base in cls.__mro__ if issubclass(base, Command)
@@ -147,7 +144,7 @@ def __split_kwargs(kwargs: "AddArgs") -> tuple["CommandArgs", "SessionArgs"]:
     """
     Split key-value arguments into session and command ones.
 
-    :param kwargs: Key-value arguments coming from :func:`.add`
+    :param kwargs: Key-value arguments coming from :deco:`.add`
     :return: the pair of key-value arguments for
         :class:`~vutils.nox.command.Command` and :class:`nox.sessions.Session`
         made from :xarg:`kwargs`
@@ -274,7 +271,6 @@ def add(**kwargs: Unpack["AddArgs"]) -> "CommandDecoratorType":
     * ``actions``, specifying the command actions
     * ``package``, specifying the importable name of the produced Python
       package
-    * ``rootdir``, specifying the root directory of the project
     * ``cachedir``, specifying the shared cache directory
     * ``config``, specifying the name of the configuration file for the command
     * ``install_mode``, specifying the installation mode of command's
@@ -374,16 +370,14 @@ def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
     :param depname: The dependency name
     :param spec: The dependency specifier
     :return: the decorator function
-    :raises ValueError: when the decorator function is called with ill-formed
-        arguments
 
     If the dependency name is ``.``, it means that the dependency is the local
     Python package source installable via ``pip install -e .``. If the
-    dependency name starts with ``./``, it means that the dependency is the
-    local Python package binary wheel distribution that can be found under the
-    directory specified by :xarg:`depname`. Otherwise, the dependency name
-    refers to a Python package from the Python package index (without
-    specifiers).
+    dependency name is ``./dist``, it means that the dependency is the local
+    Python package binary wheel distribution that can be found under the
+    ``dist`` directory produced during the building the package. Otherwise, the
+    dependency name refers to a Python package from the Python package index
+    (without specifiers).
 
     The dependecy specifier has the following semantics:
 
@@ -406,7 +400,6 @@ def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
 
         :param command: The :class:`~vutils.nox.command.Command`-based class
         :return: the :xarg:`command`
-        :raises ValueError: when arguments are ill-formed
         """
         __ensure_defs(command)
         __dep(command, depname, spec)
@@ -430,7 +423,7 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
     if isinstance(spec, str):
         spec = spec.strip()
     if (
-        (depname == "." or depname.startswith("./"))
+        (depname == "." or depname == f"./{DIST_DIR_NAME}")
         and spec is not None
         and spec != ""
     ):
@@ -443,9 +436,9 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
     if depname == ".":
         pkg_name = "."
         pkg_spec = None if spec is None else LocalDist()
-    elif depname.startswith("./"):
+    elif depname == f"./{DIST_DIR_NAME}":
         pkg_name = "."
-        pkg_spec = None if spec is None else LocalDist(depname, DistKind.BDIST)
+        pkg_spec = None if spec is None else LocalDist(DistKind.WHEEL)
     elif spec is not None and spec.startswith(">"):
         pkg_name = depname
         pkg_spec = Security(spec)
@@ -462,8 +455,6 @@ def cfg(path: str, item: object) -> "CommandDecoratorType":
     :param path: The path to the configuration item
     :param item: The configuration item
     :return: the decorator function
-    :raises TypeError: when the decorator function fails to add a configuration
-        item to the command at the location specified by the path
 
     Path segments are separated by ``::``. For instance this ::
 
@@ -484,8 +475,6 @@ def cfg(path: str, item: object) -> "CommandDecoratorType":
 
         :param command: The :class:`~vutils.nox.command.Command`-based class
         :return: the :xarg:`command`
-        :raises TypeError: when the configuration item cannot be added to the
-            command at the location specified by the path
         """
         __ensure_defs(command)
         __cfg(command, path, item)
@@ -501,8 +490,6 @@ def __cfg(command: type[Command], path: str, item: object) -> None:
     :param command: The :class:`~vutils.nox.command.Command`-based class
     :param path: The path to the configuration item
     :param item: The configuration item
-    :raises TypeError: when the configuration item cannot be added to the
-        command at the location specified by the path
     """
     container: MutableMapping[object, object]
     key: str

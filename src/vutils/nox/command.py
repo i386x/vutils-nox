@@ -8,28 +8,30 @@
 #
 """Definitions of commands."""
 
+import configparser
+import contextlib
+import functools
+import hashlib
+import io
+import optparse
+import os
 from collections.abc import (
     Callable,
     Iterable,
     Mapping,
     MutableMapping,
     MutableSequence,
+    Sequence,
 )
-import configparser
-import contextlib
-import hashlib
-import optparse
-import os
-import pathlib
 from typing import (
     TYPE_CHECKING,
-    overload,
     ClassVar,
     Generator,
     Literal,
     TypeGuard,
     TypeVar,
     Unpack,
+    overload,
 )
 
 from nox._decorators import Func
@@ -40,13 +42,18 @@ from nox.virtualenv import CondaEnv, VirtualEnv
 from pydantic import BaseModel, ConfigDict
 from setuptools import find_namespace_packages, find_packages
 from tomli_w import dump as toml_dump
-
 from vutils.nox.pkgspec import InstallMode, LocalDist, Security
-from vutils.nox.utils import DANGER_ENV_VARS, setenv, data2str, identical, mergeinsert
+from vutils.nox.utils import (
+    DANGER_ENV_VARS,
+    data2str,
+    get_where,
+    identical,
+    load_pyproject,
+    mergeinsert,
+    setenv,
+)
 
 if TYPE_CHECKING:
-    import io
-
     from vuitls.nox import (
         ActionType,
         CommandArgs,
@@ -73,12 +80,11 @@ KW_ENVNAME: Literal["envname"] = "envname"
 KW_INSTALL_MODE: Literal["install_mode"] = "install_mode"
 KW_NAME: Literal["name"] = "name"
 KW_PACKAGE: Literal["package"] = "package"
-KW_ROOTDIR: Literal["rootdir"] = "rootdir"
 KW_STATEFILE: Literal["statefile"] = "statefile"
 
 
 class CommandStateData(BaseModel):
-    """The :class:`~.CommandState` data model."""
+    """The :class:`.CommandState` data model."""
 
     model_config = ConfigDict(str_min_length=1)
 
@@ -125,8 +131,6 @@ class CommandState:
         Load the data from the persistent storage.
 
         :param session: The Nox session
-        :raises pydantic.ValidationError: if the persistent storage is
-            corrupted
 
         By calling this method changes made so far are discarded and replaced
         with the recent data from the persistent storage.
@@ -151,7 +155,6 @@ class CommandState:
         Store the data to the persistent storage.
 
         :param session: The Nox session
-        :raises pydantic.PydanticSerializationError: if the data are corrupted
         """
         storage: os.PathLike[str] = self.__get_storage(session)
 
@@ -457,6 +460,10 @@ class Dependencies(Container):
             if (
                 command.changed(KW_DEPS) or mode > InstallMode.NOINSTALL
             ) and self.__install_args:
+                if mode == InstallMode.UPDATE:
+                    self.__install_args.insert(0, "-U")
+                elif mode == InstallMode.FORCE:
+                    self.__install_args.insert(0, "--force-reinstall")
                 session.install(*self.__install_args, silent=False)
 
 
@@ -558,7 +565,7 @@ def normalize_actions(
     :raises KeyError: if an action is a name and that name is not present in
         the Nox registry
     :raises TypeError: if the action taken from the Nox registry is not an
-        instance of :class:`~.Command`
+        instance of :class:`.Command`
 
     If an action is a callable it is yielded as it is. Otherwise, it is looked
     up in the Nox registry and the found callable is then yielded.
@@ -603,6 +610,27 @@ def normalize_description(desc: str) -> str:
     return desc
 
 
+@functools.cache
+def find_package() -> str | None:
+    """
+    Find an importable package in the project directory.
+
+    :return: the importable package name or :obj:`None` if such a package
+        cannot be found
+    """
+    where: Sequence[str] | None = get_where(load_pyproject())
+    if where is not None:
+        where = list(filter(None, where))
+    if not where:
+        return None
+    packages: Sequence[str] = find_packages(where=where[-1])
+    if not packages:
+        packages = find_namespace_packages(where=where[-1])
+    if not packages:
+        return None
+    return packages[-1]
+
+
 class CommandOptsParser(optparse.OptionParser):
     """Command options parser."""
 
@@ -619,12 +647,12 @@ class CommandOptsParser(optparse.OptionParser):
         )
         self.set_defaults(**{KW_INSTALL_MODE: None})
         self.add_option(
-            "-r",
-            "--reinstall",
+            "-U",
+            "--upgrade",
             action="store_const",
             dest=KW_INSTALL_MODE,
-            const=InstallMode.REINSTALL,
-            help="reinstall dependencies",
+            const=InstallMode.UPDATE,
+            help="upgrade dependencies",
         )
         self.add_option(
             "-f",
@@ -632,7 +660,7 @@ class CommandOptsParser(optparse.OptionParser):
             action="store_const",
             dest=KW_INSTALL_MODE,
             const=InstallMode.FORCE,
-            help="force reinstall dependencies",
+            help="reinstall dependencies",
         )
         self.add_option(
             "--noinstall",
@@ -651,10 +679,8 @@ class CommandOptsParser(optparse.OptionParser):
         :param container: The container to which parsed and processed arguments
             are going to be stored
         :param args: Arguments to be parsed and processed
-        :raises optparse.OptParseError: when an error occurs during argument
-            parsing and/or processing
 
-        After arguments are parsed, remove ``--reinstall`` and ``--force`` from
+        After arguments are parsed, remove ``--upgrade`` and ``--force`` from
         :xarg:`args`, since all dependencies from subcommands are installed at
         the parent level, but keep ``--noinstall`` so it can be propagated into
         subcommands. When :xarg:`args` contain ``--help``, print the help
@@ -804,7 +830,11 @@ class Command:
             self.__actions[0], self.run
         ):
             name = self.__actions[0].__name__
-            desc = self.__actions[0].__doc__
+            desc = (
+                self.__actions[0].description
+                if isinstance(self.__actions[0], Command)
+                else self.__actions[0].__doc__
+            )
         else:
             name = type(self).__name__.lower()
             desc = type(self).__doc__
@@ -812,14 +842,9 @@ class Command:
         props.setdefault(KW_DESCRIPTION, desc)
         props[KW_DESCRIPTION] = normalize_description(props[KW_DESCRIPTION])
         props.setdefault(KW_ENVNAME, name)
-        where: os.PathLike[str] = (
-            props.setdefault(KW_ROOTDIR, pathlib.Path.cwd()) / "src"
-        )
-        packages: Iterable[str] = find_packages(where=where)
-        if not packages:
-            packages = find_namespace_packages(where=where)
-        if packages:
-            props.setdefault(KW_PACKAGE, packages[-1])
+        package: str | None = find_package()
+        if package is not None:
+            props.setdefault(KW_PACKAGE, package)
         props.setdefault(KW_CONFIG, None)
         props.setdefault(KW_INSTALL_MODE, InstallMode.NOINSTALL)
         self.__properties = props
@@ -858,14 +883,15 @@ class Command:
           :obj:`None` or the name of a previously registered command via the
           :deco:`~vutils.nox.decorators.add` decorator; actions are executed in
           order they are specified; if no action is given,
-          :meth:`~.Command.run` is used
+          :meth:`.Command.run` is used
         * ``name``, specifying the name of the session; if not given and there
           is a single action attached to this command and it is not
-          :meth:`~.Command.run`, the name is the name of this action;
-          otherwise, the name is the ``__name__`` of this command in lowercase
+          :meth:`.Command.run`, the name is the name of this action; otherwise,
+          the name is the ``__name__`` of this command in lowercase
         * ``description``, specifying the session description; if not given and
           there is a single action attached to this command and it is not
-          :meth:`~.Command.run`, the description is read from the ``__doc__``
+          :meth:`.Command.run`, the description is read from the ``__doc__``
+          (or ``description`` if the action is a :class:`.Command` instance)
           property of this action; otherwise, the description is read from the
           ``__doc__`` property of this command; if the description is
           multi-line, the first line is taken; the first letter is lowercased
@@ -877,8 +903,6 @@ class Command:
           .`` or ``pip install <wheel produced during the build>``, which
           source is under ``./src`` directory, relative to the project root
           directory; if not given it is discovered automatically
-        * ``rootdir``, specifying the root directory of the project; if not
-          given the current working directory is used
         * ``cachedir``, specifying the shared cache directory; if not given
           the :class:`nox.sessions.Session`'s shared cache directory is used
           (set when this command is executed)
@@ -887,14 +911,18 @@ class Command:
           :deco:`~vutils.nox.decorators.cfg` decorator is stored; if not given
           the configuration file is not accessible
         * ``install_mode``, specifying a mode of how and when dependencies are
-          installed: (1) :attr:`~vutils.nox.pkgspec.NOINSTALL` means do not
-          install dependencies if they are already installed; (2)
-          :attr:`~vutils.nox.pkgspec.REINSTALL` means reinstall dependencies;
-          :attr:`~vutils.nox.pkgspec.FORCE` means force reinstall dependencies;
-          if not specified then :attr:`~vutils.nox.pkgspec.NOINSTALL` is used;
-          this key-value argument can be overridden from the command line via
-          positional arguments passed to any :class:`.Command`-based session
-          (type ``nox -s dummy -- --help`` for more info)
+          installed: (1) :attr:`InstallMode.NOINSTALL
+          <vutils.nox.pkgspec.InstallMode.NOINSTALL>` means do not install
+          dependencies if they are already installed; (2)
+          :attr:`InstallMode.UPDATE
+          <vutils.nox.pkgspec.InstallMode.UPDATE>` means update dependencies;
+          :attr:`InstallMode.FORCE <vutils.nox.pkgspec.InstallMode.FORCE>`
+          means reinstall dependencies; if not specified then
+          :attr:`InstallMode.NOINSTALL
+          <vutils.nox.pkgspec.InstallMode.NOINSTALL>` is used; this key-value
+          argument can be overridden from the command line via positional
+          arguments passed to any :class:`.Command`-based session (type ``nox
+          -s dummy -- --help`` for more info)
         * ``statefile``, specifying the name of a file where the command state
           is stored; if not given then ``".state-{envname}"`` is used
         """
@@ -960,15 +988,6 @@ class Command:
         return self.__properties[KW_NAME]
 
     @property
-    def __doc__(self) -> str:
-        """
-        Get the command description.
-
-        :return: the command description
-        """
-        return self.description
-
-    @property
     def description(self) -> str:
         """
         Get the command description.
@@ -1002,15 +1021,6 @@ class Command:
                 f"{self.name}.package: Package discovery has failed"
             )
         return self.__properties[KW_PACKAGE]
-
-    @property
-    def rootdir(self) -> os.PathLike[str]:
-        """
-        Get the project root directory.
-
-        :return: the project root directory
-        """
-        return self.__properties[KW_ROOTDIR]
 
     @property
     def cachedir(self) -> os.PathLike[str]:
@@ -1071,8 +1081,6 @@ class Command:
 
         :param fname: The name of the requested configuration file
         :return: the path to the requested configuration file
-        :raises ValueError: when the path to the configuration file cannot be
-            retrieved
         """
         if fname is None:
             return self.__properties[KW_CONFIG]
@@ -1140,7 +1148,7 @@ class Command:
 
         Install dependencies and then run the specified actions. If no actions
         were given during the command initialization, execute
-        :meth:`~.Command.run`.
+        :meth:`.Command.run`.
 
         Note that dependencies are not installed if this command is a
         subcommand of some other command, since all dependencies were gathered
