@@ -13,54 +13,56 @@ import enum
 import functools
 import os
 import pathlib
-from collections.abc import Iterable, Mapping, MutableSequence, Sequence
+from collections.abc import Iterable, Mapping, MutableSequence
 from typing import TYPE_CHECKING, Literal, Self
 
 from nox.sessions import Session
 from packaging.version import Version
 from pkginfo import Wheel
-from vutils.nox.utils import (
+
+from vutils.nox.project import (
+    AUTHOR_EMAIL_KEY,
+    AUTHOR_KEY,
+    DESCRIPTION_KEY,
     DYNAMIC_KEY,
+    LICENSE_FILE_KEY,
+    MAINTAINER_EMAIL_KEY,
+    MAINTAINER_KEY,
+    NAME_KEY,
+    VERSION_KEY,
+    PyProject,
+    get_license_files,
+    get_metadata,
+    get_version,
+    load_pyproject,
+    resolve_dynamic_version,
+)
+from vutils.nox.utils import (
     EV_PYTHONPATH,
     KW_PYTHON,
-    VERSION_KEY,
     compare_files,
     dist_dir,
     envvar_is_unset,
-    get_license_files,
-    get_metadata,
     get_metadata_from_pkg,
     get_pkg_metadata_dir,
-    get_version,
     is_installed,
     is_installed_as_editable,
     is_mapping,
     is_mutable_mapping,
-    load_pyproject,
     log_diff,
     relative_path,
     remove_build_artifacts,
-    resolve_dynamic_version,
 )
 
 if TYPE_CHECKING:
     from vutils.nox import StrPath
-
-#: Selected metadata fields names
-AUTHOR_EMAIL_KEY: str = "author"
-AUTHOR_KEY: str = "author_email"
-DESCRIPTION_KEY: str = "description"
-LICENSE_FILE_KEY: str = "license_file"
-MAINTAINER_EMAIL_KEY: str = "maintainer_email"
-MAINTAINER_KEY: str = "maintainer"
-NAME_KEY: str = "name"
 
 #: Keywords
 KW_ALL: Literal["all"] = "all"
 
 
 def fix_version(
-    metadata: object, session: Session, pyproject: Mapping[str, object]
+    metadata: object, session: Session, pyproject: PyProject
 ) -> None:
     """
     Fix the project version.
@@ -69,16 +71,16 @@ def fix_version(
         distribution information
     :param session: The Nox session
     :param pyproject: The ``pyproject.toml`` data
-    :raises TypeError: when the metadata object or the ``pyproject.toml`` data
-        contain items with a wrong type
+    :raises TypeError: when the metadata object is not a mutable mapping
     """
-    # If `version` is not `None`, `metadata` contains the most recent version
-    if get_version(pyproject) is None:
-        # If `version` is `None`, `metadata` contains a default version so we
-        # need to patch it
+    if get_version(pyproject) == Version("0.0.0"):
+        # If `metadata` contains the default version, the version is probably
+        # dynamic
         if not is_mutable_mapping(metadata):
             raise TypeError("Metadata are not a mutable mapping")
-        metadata[VERSION_KEY] = resolve_dynamic_version(session, pyproject)
+        metadata[VERSION_KEY] = str(
+            resolve_dynamic_version(session, pyproject)
+        )
 
 
 def fix_description(metadata: object) -> None:
@@ -117,7 +119,6 @@ def fix_people(metadata: object) -> None:
     """
     if not is_mutable_mapping(metadata):
         raise TypeError("Metadata must be a mutable mapping")
-    field: str
     for field in (
         AUTHOR_KEY,
         AUTHOR_EMAIL_KEY,
@@ -126,7 +127,7 @@ def fix_people(metadata: object) -> None:
     ):
         if field not in metadata:
             continue
-        person: object = metadata[field]
+        person = metadata[field]
         if not isinstance(person, str):
             raise TypeError(f"`{field}` must be a string")
         metadata[field] = str(
@@ -147,7 +148,7 @@ def fix_license_file(metadata: object) -> None:
     if not is_mutable_mapping(metadata):
         raise TypeError("Metadata must be a mutable mapping")
     if LICENSE_FILE_KEY in metadata:
-        license_file: object = metadata[LICENSE_FILE_KEY]
+        license_file = metadata[LICENSE_FILE_KEY]
         if isinstance(license_file, str):
             metadata[LICENSE_FILE_KEY] = [license_file]
 
@@ -175,13 +176,11 @@ class Metadata:
     #: The metadata object in JSON
     metadata: Mapping[object, object]
     #: The origin from which metadata were extracted
-    origin: Mapping[object, object] | str
+    origin: PyProject | str
 
     __slots__ = ("metadata", "origin")
 
-    def __init__(
-        self, metadata: object, origin: Mapping[object, object] | str
-    ) -> None:
+    def __init__(self, metadata: object, origin: PyProject | str) -> None:
         """
         Initialize the wrapper.
 
@@ -206,7 +205,7 @@ class Metadata:
         """
         if NAME_KEY not in self.metadata:
             raise KeyError(f"No `{NAME_KEY}` in metadata")
-        name: object = self.metadata[NAME_KEY]
+        name = self.metadata[NAME_KEY]
         if not isinstance(name, str):
             raise TypeError(f"`{NAME_KEY}` must be a string")
         return name
@@ -221,7 +220,7 @@ class Metadata:
         """
         if VERSION_KEY not in self.metadata:
             return Version("0.0.0")
-        version: object = self.metadata[VERSION_KEY]
+        version = self.metadata[VERSION_KEY]
         if not version:
             return Version("0.0.0")
         if not isinstance(version, str):
@@ -241,8 +240,8 @@ class Metadata:
         :return: the instance of :class:`.Metadata` initialized with the loaded
             and processed metadata
         """
-        pyproject: Mapping[str, object] = load_pyproject(path)
-        metadata: object = get_metadata(pyproject).as_json()
+        pyproject = load_pyproject(path)
+        metadata = get_metadata(pyproject).as_json()
         fix_version(metadata, session, pyproject)
         fix_description(metadata)
         fix_people(metadata)
@@ -260,14 +259,14 @@ class Metadata:
         :return: the instance of :class:`.Metadata` initialized with the loaded
             and processed metadata
         """
-        metadata: object = get_metadata_from_pkg(session, name)
+        metadata = get_metadata_from_pkg(session, name)
         fix_description(metadata)
         fix_people(metadata)
         fix_license_file(metadata)
         remove_redundant(metadata)
         return cls(metadata, name)
 
-    def license_files(self, session: Session) -> Sequence[os.PathLike[str]]:
+    def license_files(self, session: Session) -> Iterable[os.PathLike[str]]:
         """
         Gather license files.
 
@@ -275,30 +274,25 @@ class Metadata:
         :return: the list of license files
         :raises OSError: when the directory layout requirements were not met
         """
+        result: MutableSequence[os.PathLike[str]] = []
         if isinstance(self.origin, str):
-            licenses_dir: os.PathLike[str] = (
+            licenses_dir = (
                 get_pkg_metadata_dir(session, self.origin) / "licenses"
             )
             if not licenses_dir.is_dir():
                 raise OSError(f"`{licenses_dir}` is not a directory")
-            result: MutableSequence[os.PathLike[str]] = []
-            item: os.PathLike[str]
             for item in licenses_dir.iterdir():
                 if item.is_dir():
                     raise OSError(f"Directory between licenses: `{item}`")
                 result.append(item)
             return result
-        else:
-            globs: Iterable[str] = get_license_files(self.origin)
-            result: MutableSequence[os.PathLike[str]] = []
-            pattern: str
-            for pattern in globs:
-                item: os.PathLike[str]
-                for item in pathlib.Path.cwd().glob(pattern):
-                    if item.is_dir():
-                        raise OSError(f"Directory between licenses: `{item}`")
-                    result.append(item)
-            return result
+        globs = get_license_files(self.origin)
+        for pattern in globs:
+            for item in pathlib.Path.cwd().glob(pattern):
+                if item.is_dir():
+                    raise OSError(f"Directory between licenses: `{item}`")
+                result.append(item)
+        return result
 
     def is_equal_to(self, session: Session, other: Self) -> bool:
         """
@@ -331,9 +325,9 @@ class DistKind(enum.IntEnum):
     """Python package distribution kind."""
 
     #: Editable
-    EDITABLE: int = 1
+    EDITABLE = 1
     #: Wheel
-    WHEEL: int = 2
+    WHEEL = 2
 
 
 def swap_kind(kind: DistKind) -> DistKind:
@@ -350,22 +344,22 @@ class InstallMode(enum.IntEnum):
     """Installation mode."""
 
     #: Do not install dependencies if they are already installed
-    NOINSTALL: int = 0
+    NOINSTALL = 0
     #: Update dependencies
-    UPDATE: int = 1
+    UPDATE = 1
     #: Force reinstall dependencies
-    FORCE: int = 2
+    FORCE = 2
 
 
 class Installed(enum.IntEnum):
     """How a package is installed."""
 
     #: A package is not installed
-    NOT_INSTALLED: int = 0
+    NOT_INSTALLED = 0
     #: A package is installed from wheel
-    WHEEL: int = 1
+    WHEEL = 1
     #: A package is installed as editable
-    EDITABLE: int = 2
+    EDITABLE = 2
 
 
 def wheel_version(path: os.PathLike[str] | None) -> Version:
@@ -377,7 +371,7 @@ def wheel_version(path: os.PathLike[str] | None) -> Version:
     """
     if path is None:
         return Version("0.0.0")
-    version: str | None = Wheel(path).version
+    version = Wheel(path).version
     if version is None:
         version = "0.0.0"
     return Version(version)
@@ -453,14 +447,13 @@ class LocalDist:
             self.__metadata = Metadata.from_pyproject(session)
         if self.__wheel:
             return
-        path: os.PathLike[str] = dist_dir()
+        path = dist_dir()
         if not path.is_dir():
             return
 
         wheels: MutableSequence[tuple[os.PathLike[str], Wheel]] = []
-        whl: os.PathLike[str]
         for whl in path.glob("*.whl"):
-            wheel: Wheel = Wheel(whl)
+            wheel = Wheel(whl)
             if wheel.name is None or wheel.name != self.__metadata.name:
                 continue
             wheels.append((whl, wheel))
@@ -472,13 +465,56 @@ class LocalDist:
             :param item: The item
             :return: the comparable object
             """
-            ver: str | None = item[1].version
+            ver = item[1].version
             return Version("0.0.0" if ver is None else ver)
 
         wheels.sort(key=keyfunc)
         if len(wheels) == 0:
             raise ValueError(f"No matching *.whl found at `{path}`")
         self.__wheel = wheels[-1][0]
+
+    def __check_installed(
+        self, session: Session, mode: InstallMode
+    ) -> tuple[Installed, bool]:
+        """
+        Check so far installed local package.
+
+        :param session: The Nox session
+        :param mode: The installation mode
+        :return: the pair containing information about how the local package is
+            installed and whether the local package needs to be (re)installed
+
+        This is an auxiliary method for :meth:`.LocalDist.install`.
+        """
+        name = self.__metadata.name
+
+        installed = Installed.NOT_INSTALLED
+        if is_installed(session, name):
+            installed = Installed.WHEEL
+        if installed > Installed.NOT_INSTALLED and is_installed_as_editable(
+            session, name
+        ):
+            installed = Installed.EDITABLE
+
+        if installed == Installed.EDITABLE:
+            if (
+                mode == InstallMode.NOINSTALL
+                and not self.__metadata.is_equal_to(
+                    session, Metadata.from_distribution(session, name)
+                )
+            ):
+                mode = InstallMode.FORCE
+            if mode == InstallMode.NOINSTALL:
+                return installed, False
+        elif installed == Installed.WHEEL:
+            if mode == InstallMode.NOINSTALL:
+                return installed, False
+            if wheel_version(self.__wheel) > package_version(session, name):
+                mode = InstallMode.FORCE
+            if mode < InstallMode.FORCE:
+                return installed, False
+
+        return installed, True
 
     def install(
         self, session: Session, mode: InstallMode = InstallMode.NOINSTALL
@@ -512,33 +548,10 @@ class LocalDist:
 
         if self.__metadata is None:
             raise ValueError("Missing the local package metadata")
-        name: str = self.__metadata.name
 
-        installed: Installed = Installed.NOT_INSTALLED
-        if is_installed(session, name):
-            installed = Installed.WHEEL
-        if installed > Installed.NOT_INSTALLED and is_installed_as_editable(
-            session, name
-        ):
-            installed = Installed.EDITABLE
-
-        if installed == Installed.EDITABLE:
-            if (
-                mode == InstallMode.NOINSTALL
-                and not self.__metadata.is_equal_to(
-                    session, Metadata.from_distribution(session, name)
-                )
-            ):
-                mode = InstallMode.FORCE
-            if mode == InstallMode.NOINSTALL:
-                return
-        elif installed == Installed.WHEEL:
-            if mode == InstallMode.NOINSTALL:
-                return
-            if wheel_version(self.__wheel) > package_version(session, name):
-                mode = InstallMode.FORCE
-            if mode < InstallMode.FORCE:
-                return
+        installed, needs_install = self.__check_installed(session, mode)
+        if not needs_install:
+            return
 
         if installed > Installed.NOT_INSTALLED:
             self.remove(session)
@@ -549,9 +562,9 @@ class LocalDist:
         else:
             if self.__wheel is None:
                 raise ValueError("No wheel found to be installed")
-            arg: str = f"{relative_path(self.__wheel)}"
+            arg = f"{relative_path(self.__wheel)}"
             if session.venv_backend == "uv":
-                arg = f"{name}@{arg}"
+                arg = f"{self.__metadata.name}@{arg}"
             args.append(arg)
         session.install(*args, silent=False)
 
@@ -576,19 +589,17 @@ class LocalDist:
         self.discover(session)
         if self.__metadata is None:
             raise ValueError("Missing the local package metadata")
-        name: str = self.__metadata.name
+        name = self.__metadata.name
         if kind is None:
             kind = self.kind
         if not is_installed(session, name):
             return
-        if not kind == KW_ALL:
+        if kind != KW_ALL:
             if is_installed_as_editable(session, name) is not (
                 kind == DistKind.EDITABLE
             ):
                 return
-        cmd: MutableSequence[StrPath] = (
-            ["uv"] if session.venv_backend == "uv" else [KW_PYTHON, "-m"]
-        )
+        cmd = ["uv"] if session.venv_backend == "uv" else [KW_PYTHON, "-m"]
         cmd.extend(["pip", "uninstall", "-y", name])
         session.run(*cmd)
 

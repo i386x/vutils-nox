@@ -14,6 +14,7 @@ from typing import Literal, TypedDict
 from nox._typing import Python
 from nox.sessions import Session
 from typing_extensions import TypeAlias
+
 from vutils.nox.command import Command, CommandState
 from vutils.nox.pkgspec import InstallMode, LocalDist, Security
 

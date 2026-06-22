@@ -6,16 +6,6 @@
 #
 # SPDX-License-Identifier: MIT
 #
-# /// script
-# dependencies = [
-#     "nox",
-#     "pkginfo",
-#     "pydantic",
-#     "pyproject_metadata",
-#     "setuptools",
-#     "tomli_w",
-# ]
-# ///
 """The Noxfile."""
 
 from vutils.nox.nox import setup

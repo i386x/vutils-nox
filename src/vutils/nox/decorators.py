@@ -8,10 +8,18 @@
 #
 """Decorators."""
 
-from collections.abc import Iterable, MutableMapping, MutableSequence
-from typing import TYPE_CHECKING, Literal, TypeGuard, TypeVar, Unpack
+from collections.abc import Iterable
+from typing import (
+    TYPE_CHECKING,
+    Generator,
+    Literal,
+    TypeGuard,
+    TypeVar,
+    Unpack,
+)
 
 from nox.registry import session_decorator
+
 from vutils.nox.command import (
     KW_ACTIONS,
     KW_CACHEDIR,
@@ -27,6 +35,7 @@ from vutils.nox.command import (
     Command,
 )
 from vutils.nox.pkgspec import DistKind, LocalDist, Security
+from vutils.nox.project import project_dependencies
 from vutils.nox.utils import DIST_DIR_NAME, KW_PYTHON, container_at_path
 
 if TYPE_CHECKING:
@@ -38,7 +47,6 @@ if TYPE_CHECKING:
         CommandDecoratorType,
         CommonArgsKey,
         MatrixArgs,
-        PkgSpecType,
         SessionArgs,
         SessionArgsKey,
         SessionArgsOnlyKey,
@@ -58,10 +66,10 @@ KW_TAGS: Literal["tags"] = "tags"
 
 #: Key-value arguments both common to :class:`nox.sessions.Session` and
 #: :class:`~vutils.nox.command.Command`
-COMMON_KWARGS: Iterable[str] = (KW_NAME,)
+COMMON_KWARGS = (KW_NAME,)
 
 #: Key-value arguments used only by :class:`~vutils.nox.command.Command`
-COMMAND_ONLY_KWARGS: Iterable[str] = (
+COMMAND_ONLY_KWARGS = (
     KW_INSTALL_MODE,
     KW_DESCRIPTION,
     KW_ENVNAME,
@@ -73,7 +81,7 @@ COMMAND_ONLY_KWARGS: Iterable[str] = (
 )
 
 #: Key-value arguments used only by :class:`nox.sessions.Session`
-SESSION_ONLY_KWARGS: Iterable[str] = (
+SESSION_ONLY_KWARGS = (
     KW_PYTHON,
     KW_PY,
     KW_REUSE_VENV,
@@ -83,6 +91,9 @@ SESSION_ONLY_KWARGS: Iterable[str] = (
     KW_DEFAULT,
     KW_REQUIRES,
 )
+
+#: Special dependencies names
+FROM_PYPROJECT = "pyproject"
 
 
 def __ensure_defs(cls: type[Command]) -> None:
@@ -97,10 +108,8 @@ def __ensure_defs(cls: type[Command]) -> None:
     makes sure that dependencies and configuration are added correctly to
     user-defined commands and not cumulated in the base class.
     """
-    bases: MutableSequence[type[Command]] = [
-        base for base in cls.__mro__ if issubclass(base, Command)
-    ]
-    origin: type[Command] = bases.pop()
+    bases = [base for base in cls.__mro__ if issubclass(base, Command)]
+    origin = bases.pop()
     while bases:
         if bases[-1].DEFS is origin.DEFS:
             bases[-1].DEFS = {KW_DEPS: {}, KW_CONF: {}}
@@ -153,7 +162,6 @@ def __split_kwargs(kwargs: "AddArgs") -> tuple["CommandArgs", "SessionArgs"]:
     command_kwargs: CommandArgs = {}
     session_kwargs: SessionArgs = {}
 
-    key: str
     for key in kwargs:
         if __is_common_kwarg(key):
             session_kwargs[key] = kwargs[key]
@@ -234,9 +242,8 @@ def __combine(kwargs: T, other: "MatrixArgs", allowed: Iterable[str]) -> T:
     :raises TypeError: in case of an invalid combination of :xarg:`kwargs` and
         :xarg:`allowed`
     """
-    new_kwargs: T = kwargs.copy()
+    new_kwargs = kwargs.copy()
 
-    key: str
     for key in other:
         if key in new_kwargs:
             raise ValueError(f"`{key}` is already specified")
@@ -350,13 +357,9 @@ def __add(command: type[Command], **kwargs: Unpack["AddArgs"]) -> None:
     :param command: The :class:`~vutils.nox.command.Command`-based class
     :param kwargs: Key-value arguments
     """
-    matrix: Iterable[MatrixArgs] = kwargs.pop(KW_MATRIX, ({},))
-
-    command_kwargs: CommandArgs
-    session_kwargs: SessionArgs
+    matrix = kwargs.pop(KW_MATRIX, ({},))
     command_kwargs, session_kwargs = __split_kwargs(kwargs)
 
-    row: MatrixArgs
     for row in matrix:
         session_decorator(
             **__combine(session_kwargs, row, SESSION_ONLY_KWARGS)
@@ -375,9 +378,18 @@ def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
     Python package source installable via ``pip install -e .``. If the
     dependency name is ``./dist``, it means that the dependency is the local
     Python package binary wheel distribution that can be found under the
-    ``dist`` directory produced during the building the package. Otherwise, the
-    dependency name refers to a Python package from the Python package index
-    (without specifiers).
+    ``dist`` directory produced during the building the package. If the
+    dependency name starts with ``%``, it means it is the special case (see
+    further). Otherwise, the dependency name refers to a Python package from
+    the Python package index (without specifiers).
+
+    The special cases of dependencies:
+
+    * ``%pyproject``, meaning that the dependencies and their specifiers are
+      loaded from ``pyproject.toml`` from the ``project.dependencies`` field.
+      Note that when :xarg:`spec` is :obj:`None` then :obj:`None` overrides all
+      specifiers of loaded dependencies, meaning that the dependencies will be
+      removed from the set instead of added.
 
     The dependecy specifier has the following semantics:
 
@@ -420,10 +432,19 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
     depname = depname.strip()
     if depname == "":
         raise ValueError("Dependency name must not be empty")
+
+    if depname.startswith("%"):
+        dep_spec: tuple[str, str]
+        for dep_spec in __dep_special(depname[1:]):
+            __dep(
+                command, dep_spec[0], dep_spec[1] if spec is not None else None
+            )
+        return
+
     if isinstance(spec, str):
         spec = spec.strip()
     if (
-        (depname == "." or depname == f"./{DIST_DIR_NAME}")
+        depname in {".", f"./{DIST_DIR_NAME}"}
         and spec is not None
         and spec != ""
     ):
@@ -431,8 +452,6 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
             "Dependency specifier must be either empty string or `None`"
         )
 
-    pkg_name: str
-    pkg_spec: PkgSpecType
     if depname == ".":
         pkg_name = "."
         pkg_spec = None if spec is None else LocalDist()
@@ -446,6 +465,24 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
         pkg_name = depname
         pkg_spec = spec
     command.DEFS[KW_DEPS][pkg_name] = pkg_spec
+
+
+def __dep_special(depname: str) -> Generator[tuple[str, str], None, None]:
+    """
+    Handle the special dependency case.
+
+    :param depname: The special dependency case name
+    :return: the generator yielding pairs where each pair contains the
+        dependency name and specifier
+    :raises ValueError: when :xarg:`depname` is not a valid special dependency
+        case name
+    """
+    depname = depname.strip()
+    if depname == FROM_PYPROJECT:
+        for req in project_dependencies():
+            yield (req.name, str(req)[len(req.name) :].strip())
+    else:
+        raise ValueError(f"Unknown special dependency case name: %{depname}")
 
 
 def cfg(path: str, item: object) -> "CommandDecoratorType":
@@ -491,7 +528,5 @@ def __cfg(command: type[Command], path: str, item: object) -> None:
     :param path: The path to the configuration item
     :param item: The configuration item
     """
-    container: MutableMapping[object, object]
-    key: str
     container, key = container_at_path(command.DEFS[KW_CONF], path)
     container[key] = item

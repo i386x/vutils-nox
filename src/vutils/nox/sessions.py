@@ -75,24 +75,25 @@ Local workflow:
   * audit environment [pyXY, python]
   * audit dependencies from the installed packages dump, e.g. produced by
     ``pip freeze`` [pyXY, python]
-
 """
 
-import os
 import tempfile
 from collections.abc import Iterable, MutableSequence, Sequence
 from typing import TYPE_CHECKING, Generator, Unpack
 
 from nox.sessions import Session
+
 from vutils.nox.command import (
     KW_ACTIONS,
     KW_DESCRIPTION,
     KW_ENVNAME,
     KW_NAME,
     Command,
+    find_package,
 )
 from vutils.nox.decorators import KW_REQUIRES, KW_TAGS, add, cfg, dep
 from vutils.nox.pkgspec import KW_ALL, LocalDist
+from vutils.nox.project import project_name, project_pythons
 from vutils.nox.utils import (
     DANGER_ENV_VARS,
     DIST_DIR_NAME,
@@ -101,7 +102,7 @@ from vutils.nox.utils import (
     dist_dir,
     inside_ci,
     packages_dir,
-    project_pythons,
+    project_dirs,
     relative_path,
     remove_build_artifacts,
     rm_dist_dir,
@@ -111,25 +112,38 @@ from vutils.nox.utils import (
 )
 
 if TYPE_CHECKING:
-    from vutils.nox import MatrixArgs, StrPath
+    from vutils.nox import MatrixArgs
 
 #: Run the check subset of linters
-CHECK_TAG: str = "check"
+CHECK_TAG = "check"
 #: Run linters, recreate environment tag
-LINT_R_TAG: str = "lint-r"
+LINT_R_TAG = "lint-r"
 #: Run linters, reuse environment tag
-LINT_TAG: str = "lint"
+LINT_TAG = "lint"
 #: Run tests tag
-TESTS_TAG: str = "tests"
+TESTS_TAG = "tests"
 
 #: :obj:`True` if we are running inside CI
-INSIDE_CI: bool = inside_ci()
+INSIDE_CI = inside_ci()
 #: All supported Python versions by the project. In CI, this is provided by the
 #: test matrix, defined inside CI, and hence we pass the empty list here
-ALL_PYTHONS: Sequence[str] = project_pythons() if not INSIDE_CI else []
+ALL_PYTHONS: Iterable[str] = project_pythons() if not INSIDE_CI else []
 
 #: Common configuration constants
-LINE_LENGTH: int = 79
+LINE_LENGTH = 79
+
+
+def package_name() -> str:
+    """
+    Return the importable package name for this project.
+
+    :return: the importable package name
+    :raises ValueError: when the project does not ship importable package
+    """
+    package = find_package()
+    if package is None:
+        raise ValueError("The project does not ship any importable package")
+    return package
 
 
 def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str], None, None]:
@@ -141,7 +155,6 @@ def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str], None, None]:
         :xarg:`pythons` and the same version with the dot (``.``) separators
         removed
     """
-    pyver: str
     for pyver in pythons:
         yield (pyver, pyver.replace(".", ""))
 
@@ -159,7 +172,7 @@ def ci_matrix(
     Python virtual environments as part of them so we can just use the same
     version of Python that was used to run the Nox.
     """
-    matrix: MatrixArgs = {KW_ENVNAME: KW_PYTHON, KW_PYTHON: KW_PYTHON}
+    matrix = {KW_ENVNAME: KW_PYTHON, KW_PYTHON: KW_PYTHON}
     matrix.update(exts)
     yield matrix
 
@@ -180,8 +193,6 @@ def purge_matrix(
     :param pythons: Supported Python versions
     :return: the test matrix
     """
-    pyver: str
-    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
             KW_NAME: f"pu{ver}",
@@ -221,7 +232,7 @@ def build_matrix(
     :param pythons: Supported Python versions
     :return: the test matrix
     """
-    tags: MutableSequence[str] = [TESTS_TAG]
+    tags = [TESTS_TAG]
     tags.extend(f"t{ver}" for _, ver in pyvers(pythons))
     yield from ci_matrix(tags=tags)
 
@@ -255,8 +266,6 @@ def pytest_matrix(
     :param pythons: Supported Python versions
     :return: the test matrix
     """
-    pyver: str
-    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
             KW_NAME: f"py{ver}",
@@ -304,8 +313,6 @@ def coveralls_matrix(
     :param pythons: Supported Python versions
     :return: the test matrix
     """
-    pyver: str
-    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
             KW_NAME: f"cov{ver}",
@@ -334,12 +341,10 @@ class Coveralls(Command):
         :param is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
-        coveragerc: StrPath | None = self.config(".coveragerc")
-        args: MutableSequence[str] = ["coveralls", f"--rcfile={coveragerc}"]
+        coveragerc = self.config(".coveragerc")
+        args = ["coveralls", f"--rcfile={coveragerc}"]
         if INSIDE_CI:
-            basedir: os.PathLike[str] = relative_path(
-                packages_dir(session, self.package)
-            )
+            basedir = relative_path(packages_dir(session, self.package))
             args.extend(
                 [
                     f"--basedir={basedir}",
@@ -360,8 +365,6 @@ def audit_matrix(
     :param pythons: Supported Python versions
     :return: the test matrix
     """
-    pyver: str
-    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
             KW_NAME: f"pa{ver}",
@@ -422,8 +425,6 @@ def test_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
     :param pythons: Supported Python versions
     :return: the test matrix
     """
-    pyver: str
-    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
             KW_ACTIONS: [f"py{ver}", f"cov{ver}", f"pa{ver}"],
@@ -461,8 +462,6 @@ def uninstall_matrix(
     :param pythons: Supported Python versions
     :return: the test matrix
     """
-    pyver: str
-    ver: str
     for pyver, ver in pyvers(pythons):
         yield {
             KW_NAME: f"uin{ver}",
@@ -507,7 +506,7 @@ def linter_matrix(
     :param postreq: Post requirements
     :return: the test matrix
     """
-    tags: MutableSequence[str] = [LINT_TAG, LINT_R_TAG]
+    tags = [LINT_TAG, LINT_R_TAG]
     if xtags is not None:
         tags.extend(xtags)
     requires: MutableSequence[str] = []
@@ -614,7 +613,12 @@ class Black(Linter):
 @add(matrix=linter_matrix(), reuse_venv=True, default=True)
 @cfg(
     "isort",
-    {"profile": "black", "skip_gitignore": True, "line_length": LINE_LENGTH},
+    {
+        "profile": "black",
+        "skip_gitignore": True,
+        "line_length": LINE_LENGTH,
+        "known_first_party": package_name(),
+    },
 )
 @dep("isort")
 class Isort(Linter):
@@ -639,7 +643,7 @@ class Isort(Linter):
 
 
 #: Patched ``flake8`` compatible with ``black`` plus some additional tweaks
-BLACK_COMPAT_FLAKE8: str = """
+BLACK_COMPAT_FLAKE8 = """
 import functools
 import re
 
@@ -706,8 +710,8 @@ if __name__ == "__main__":
     "flake8",
     {
         "filename": "*.py,*.pyi,*.pyw",
-        "select": "E,F,W,C,G,Y,I",
-        "enable-extensions": "G,Y,I",
+        "select": "E,F,W,C,L,Y,I",
+        "enable-extensions": "L,Y,I",
         "max-line-length": LINE_LENGTH,
         "max-doc-length": LINE_LENGTH,
         # Disable not PEP 8 compliant warnings:
@@ -725,11 +729,12 @@ if __name__ == "__main__":
         "statistics": True,
         "doctests": True,
         "max-complexity": 15,
+        "known-modules": f"{project_name()}:[{package_name()}]",
     },
 )
 @dep("flake8-requirements")
 @dep("flake8-pyi")
-@dep("flake8-logging-format")
+@dep("flake8-logging")
 @dep("flake8")
 class Flake8(Linter):
     """Run style checks."""
@@ -755,11 +760,89 @@ class Flake8(Linter):
             )
 
 
+@add(matrix=linter_matrix(), reuse_venv=True, default=True)
+@cfg("tool::pylint::similarities::ignore-imports", True)
+@cfg(
+    "tool::pylint::message control",
+    {
+        "enable": ["useless-suppression"],
+        # `mypy` does the better job
+        "disable": ["no-member"],
+    },
+)
+@cfg("tool::pylint::format::max-line-length", LINE_LENGTH)
+@cfg("tool::pylint::design::min-public-methods", 0)
+@cfg("tool::pylint::main::ignore-patterns", ["^\\.#", "\\.pyi$"])
+@dep("%pyproject")
+@dep("pytest")
+@dep("pylint")
 class Pylint(Linter):
-    """"""
+    """Run static code checks."""
 
     __slots__ = ()
 
     def lint(self, session: Session) -> None:
         """
+        Perform static code checks.
+
+        :param session: The Nox session
         """
+        dirs = project_dirs(relative=True)
+        if len(dirs) == 0:
+            return
+        args = [
+            "pylint",
+            "--rcfile",
+            self.config(f".{self.name}rc.toml"),
+        ]
+        args.extend(dirs)
+        session.run(*args)
+
+
+@add(matrix=linter_matrix(), reuse_venv=True, default=True)
+@cfg(
+    "mypy",
+    {
+        "mypy_path": "src",
+        "disallow_any_unimported": True,
+        "disallow_any_expr": True,
+        "disallow_any_decorated": True,
+        "disallow_any_explicit": True,
+        "disallow_any_generics": True,
+        "disallow_subclassing_any": True,
+        "disallow_untyped_calls": True,
+        "disallow_untyped_defs": True,
+        "disallow_incomplete_defs": True,
+        "check_untyped_defs": True,
+        "disallow_untyped_decorators": True,
+        "warn_redundant_casts": True,
+        "warn_unused_ignores": True,
+        "warn_return_any": True,
+        "warn_unreachable": True,
+        "extra_checks": True,
+        "strict_equality": True,
+        "strict": True,
+        "warn_incomplete_stub": True,
+        "warn_unused_configs": True,
+    },
+)
+@dep("%pyproject")
+@dep("mypy")
+class Mypy(Linter):
+    """Run type checks."""
+
+    __slots__ = ()
+
+    def lint(self, session: Session) -> None:
+        """
+        Perform type checks.
+
+        :param session: The Nox session
+        """
+        session.run(
+            "mypy",
+            "--config-file",
+            self.config(f".{self.name}.ini"),
+            "-p",
+            package_name(),
+        )

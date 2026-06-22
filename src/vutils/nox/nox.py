@@ -10,10 +10,11 @@
 
 import sys
 
-import vutils.nox.sessions as _
 from nox._decorators import Func
 from nox.sessions import SessionRunner as NoxSessionRunner
 from nox.sessions import _normalize_path
+
+import vutils.nox.sessions as _
 from vutils.nox.command import Command
 
 
@@ -66,12 +67,12 @@ def patch_nox(old: object, new: object) -> None:
     Go throw all imported Nox modules, find all occurrences of :xarg:`old`,
     based on its ``__name__``, and replace it with :xarg:`new`.
     """
-    for modname in sys.modules:
+    for name, module in sys.modules.items():
         if (
-            modname.startswith("nox")
-            and getattr(sys.modules[modname], old.__name__, None) is old
+            name.startswith("nox")
+            and getattr(module, old.__name__, None) is old
         ):
-            setattr(sys.modules[modname], old.__name__, new)
+            setattr(module, old.__name__, new)
 
 
 def setup() -> None:
