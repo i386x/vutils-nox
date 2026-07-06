@@ -1,5 +1,5 @@
 #
-# File:    ./src/vutils/nox/__init__.pyi
+# File:    ./src/vutils/nox/typing.pyi
 # Author:  Jiří Kučera <sanczes AT gmail.com>
 # Date:    2025-09-30 19:13:09 +0200
 # Project: vutils-nox: Shared Nox configuration for vutils
@@ -9,16 +9,19 @@
 
 from collections.abc import Callable, Iterable, MutableMapping, Sequence
 from os import PathLike
-from typing import Literal, TypedDict
+from typing import Literal, Protocol, TypeAlias, TypedDict
 
 from nox._typing import Python
 from nox.sessions import Session
-from typing_extensions import TypeAlias
 
-from vutils.nox.command import Command, CommandState
+from vutils.nox.command import Command
 from vutils.nox.pkgspec import InstallMode, LocalDist, Security
+from vutils.nox.state import CommandState
 
 StrPath: TypeAlias = str | PathLike[str]
+
+class TypesFunctionType(Protocol):
+    def __call__(self, *args: object, **kwargs: object) -> object: ...
 
 CommandBaseType: TypeAlias = type[Command | object]
 PkgSpecType: TypeAlias = LocalDist | Security | str | None

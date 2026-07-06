@@ -24,8 +24,8 @@ from vutils.nox.pkgspec import InstallMode, LocalDist, Security
 from vutils.nox.utils import DANGER_ENV_VARS, data2str, mergeinsert, setenv
 
 if TYPE_CHECKING:
-    from vutils.nox import ConfType, PkgSpecType
     from vutils.nox.command import Command
+    from vutils.nox.typing import ConfType, PkgSpecType
 
 T = TypeVar("T", bound=Security | str)
 

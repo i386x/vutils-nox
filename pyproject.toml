@@ -37,6 +37,7 @@ readme = "README.md"
 keywords = ["nox"]
 dependencies = [
     "nox",
+    "mypy",
     "packaging",
     "pkginfo",
     "pydantic",
@@ -48,6 +49,11 @@ dependencies = [
 requires-python = ">=3.10, <4"
 dynamic = ["version"]
 
+[project.optional-dependencies]
+mypy = [
+    "types-setuptools",
+]
+
 [project.urls]
 "Home Page" = "https://github.com/i386x/vutils-nox"
 Issues = "https://github.com/i386x/vutils-nox/issues"
@@ -58,3 +64,6 @@ version = {attr = "vutils.nox.version.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.vutils-nox.sessions.pylint]
+extension-pkg-whitelist = ["mypy"]

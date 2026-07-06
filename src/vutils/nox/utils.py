@@ -25,7 +25,7 @@ from collections.abc import (
     MutableSequence,
     Sequence,
 )
-from typing import TYPE_CHECKING, Generator, Literal
+from typing import TYPE_CHECKING, Generator, Literal, TypeVar
 
 from nox.logger import logger
 from nox.sessions import Session
@@ -33,7 +33,10 @@ from nox.virtualenv import CondaEnv, VirtualEnv
 from typing_extensions import TypeIs
 
 if TYPE_CHECKING:
-    from vutils.nox import StrPath
+    from vutils.nox.typing import StrPath
+
+#: Type variables
+T = TypeVar("T")
 
 #: Keywords
 KW_PYTHON: Literal["python"] = "python"
@@ -57,6 +60,38 @@ DATAPATH_SEP = "::"
 #: The regular expression for identifying import failures in the output of a
 #: Python script
 IMPORT_ERROR_RE = re.compile("Traceback|ModuleNotFoundError|ImportError")
+
+
+def fix_decorator_type(func: T) -> T:
+    """
+    Help ``mypy`` plugin to fix a decorator type.
+
+    :param func: The decorator function
+    :return: the decorator function with fixed signature
+
+    Some libraries may have decorators annotated as
+    ``Callable[[Callable[..., T]], Wrapper[T]]``, which is expanded by ``mypy``
+    to ``def [T](def (*Any, **Any) -> T) -> Wrapper[T]``, which is adjusted by
+    our ``mypy`` plugin to
+    ``def [T](def (*object, **object) -> T) -> Wrapper[T]``. However, functions
+    like ``def (int, float) -> T`` cannot be passed to places where
+    ``def (*object, **object) -> T`` is expected, even when this seems to be
+    correct, due to the ``mypy`` type checking rules. Thus, when
+    ``def (*object, **object) -> ...`` is detected in a decorator signature it
+    is replaced with ``def [**P](*P.args, **P.kwargs) -> ...``; in our case:
+    ``def [**P, T](def (*P.args, **P.kwargs) -> T) -> Wrapper[T]`` is the final
+    type produced by our plugin. To do this conversion properly, this function
+    must be used as a wrapper around a decorator function to trigger the
+    correct hook provided by our plugin::
+
+        @fix_decorator_type(functools.cache)
+        def sum(x: int, y: int) -> int:
+            return x + y
+
+    Using the decorator directly is not enough at this time since ``mypy`` does
+    not trigger ``get_function_signature_hook`` for decorators.
+    """
+    return func
 
 
 def identical(lhs: object, rhs: object) -> bool:
@@ -211,13 +246,11 @@ def mergeinsert(
     if item is RemoveMarker:
         if key in container:
             del container[key]
-    elif (
-        key in container
-        and is_mutable_mapping(container[key])
-        and is_mapping(item)
-    ):
-        for ikey in item:
-            mergeinsert(container[key], item[ikey], ikey)
+    elif key in container and is_mapping(item):
+        value = container[key]
+        if is_mutable_mapping(value):
+            for ikey in item:
+                mergeinsert(value, item[ikey], ikey)
     else:
         container[key] = item
 
@@ -246,7 +279,7 @@ def log_diff(
             logger.info("METADATA: `%s` removed", key)
 
 
-def resolve_path(path: "StrPath") -> os.PathLike[str]:
+def resolve_path(path: "StrPath") -> pathlib.Path:
     """
     Resolve :xarg:`path`.
 
@@ -258,7 +291,7 @@ def resolve_path(path: "StrPath") -> os.PathLike[str]:
     ).resolve()
 
 
-def relative_path(path: os.PathLike[str]) -> os.PathLike[str]:
+def relative_path(path: pathlib.Path) -> pathlib.Path:
     """
     Make :xarg:`path` relative to the current working directory.
 
@@ -269,7 +302,7 @@ def relative_path(path: os.PathLike[str]) -> os.PathLike[str]:
 
 
 def __build_file_map(
-    files: Iterable[os.PathLike[str]],
+    files: Iterable[pathlib.Path],
 ) -> Mapping[str, os.PathLike[str]]:
     """
     Build the file map from a file list.
@@ -321,7 +354,7 @@ def __compare_files(
 
 
 def compare_files(
-    recent: Iterable[os.PathLike[str]], old: Iterable[os.PathLike[str]]
+    recent: Iterable[pathlib.Path], old: Iterable[pathlib.Path]
 ) -> bool:
     """
     Compare two lists of files.
@@ -361,7 +394,7 @@ def get_metadata_from_pkg(session: Session, package: str) -> object:
     return json.loads(metadata)
 
 
-def get_pkg_metadata_dir(session: Session, package: str) -> os.PathLike[str]:
+def get_pkg_metadata_dir(session: Session, package: str) -> pathlib.Path:
     """
     Get the metadata directory of the installed package.
 
@@ -376,7 +409,7 @@ def get_pkg_metadata_dir(session: Session, package: str) -> os.PathLike[str]:
     return pathlib.Path(run_script(session, script))
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def inside_ci() -> bool:
     """
     Return :obj:`True` if we are running inside CI.
@@ -386,8 +419,8 @@ def inside_ci() -> bool:
     return any(x in os.environ for x in CI_ENV_VARS)
 
 
-@functools.cache
-def dist_dir() -> os.PathLike[str]:
+@fix_decorator_type(functools.cache)
+def dist_dir() -> pathlib.Path:
     """
     Return the path to the ``./dist`` directory.
 
@@ -403,8 +436,8 @@ def rm_dist_dir() -> None:
         shutil.rmtree(path)
 
 
-@functools.cache
-def docs_dir() -> os.PathLike[str]:
+@fix_decorator_type(functools.cache)
+def docs_dir() -> pathlib.Path:
     """
     Return the path to the ``./docs`` directory.
 
@@ -413,8 +446,8 @@ def docs_dir() -> os.PathLike[str]:
     return pathlib.Path.cwd() / "docs"
 
 
-@functools.cache
-def src_dir() -> os.PathLike[str]:
+@fix_decorator_type(functools.cache)
+def src_dir() -> pathlib.Path:
     """
     Return the path to the ``./src`` directory.
 
@@ -423,8 +456,8 @@ def src_dir() -> os.PathLike[str]:
     return pathlib.Path.cwd() / "src"
 
 
-@functools.cache
-def tests_dir() -> os.PathLike[str]:
+@fix_decorator_type(functools.cache)
+def tests_dir() -> pathlib.Path:
     """
     Return the path to the ``./tests`` directory.
 
@@ -433,8 +466,8 @@ def tests_dir() -> os.PathLike[str]:
     return pathlib.Path.cwd() / "tests"
 
 
-@functools.cache
-def utests_dir() -> os.PathLike[str]:
+@fix_decorator_type(functools.cache)
+def utests_dir() -> pathlib.Path:
     """
     Return the path to the ``./tests/unit`` directory.
 
@@ -443,8 +476,8 @@ def utests_dir() -> os.PathLike[str]:
     return tests_dir() / "unit"
 
 
-@functools.cache
-def integs_dir() -> os.PathLike[str]:
+@fix_decorator_type(functools.cache)
+def integs_dir() -> pathlib.Path:
     """
     Return the path to the ``./tests/integration`` directory.
 
@@ -453,7 +486,7 @@ def integs_dir() -> os.PathLike[str]:
     return tests_dir() / "integration"
 
 
-def project_dirs(relative: bool = False) -> Iterable[os.PathLike[str]]:
+def project_dirs(relative: bool = False) -> Iterable[pathlib.Path]:
     """
     Get the list of existing project directories.
 
@@ -532,7 +565,10 @@ def run_script(session: Session, script: str) -> str:
     :param script: The script
     :return: the script output
     """
-    return session.run(KW_PYTHON, "-c", script, silent=True, log=False).strip()
+    result = session.run(KW_PYTHON, "-c", script, silent=True, log=False)
+    if result is None:
+        return ""
+    return str(result).strip()
 
 
 def interpreter(session: Session) -> str:
@@ -589,7 +625,7 @@ def is_installed_as_editable(session: Session, package: str) -> bool:
     return output == TRUE
 
 
-def package_dir(session: Session, package: str) -> os.PathLike[str]:
+def package_dir(session: Session, package: str) -> pathlib.Path:
     """
     Return the directory where the package's content is installed.
 
@@ -603,7 +639,7 @@ def package_dir(session: Session, package: str) -> os.PathLike[str]:
     return pkg_init_path.parent.resolve()
 
 
-def packages_dir(session: Session, package: str) -> os.PathLike[str]:
+def packages_dir(session: Session, package: str) -> pathlib.Path:
     """
     Return the path to ``site-packages`` where the package is installed.
 

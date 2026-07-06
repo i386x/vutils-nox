@@ -39,7 +39,7 @@ from vutils.nox.project import project_dependencies
 from vutils.nox.utils import DIST_DIR_NAME, KW_PYTHON, container_at_path
 
 if TYPE_CHECKING:
-    from vutils.nox import (
+    from vutils.nox.typing import (
         AddArgs,
         CommandArgs,
         CommandArgsKey,
@@ -386,7 +386,30 @@ def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
     The special cases of dependencies:
 
     * ``%pyproject``, meaning that the dependencies and their specifiers are
-      loaded from ``pyproject.toml`` from the ``project.dependencies`` field.
+      loaded from ``pyproject.toml`` from the ``project.dependencies`` field
+      and optionally (i.e. if it is present) from the
+      ``project.optional-dependencies.<S>`` field, where ``<S>`` is the session
+      class name in lower case. That is, if ``pyproject.toml`` contains
+
+      .. code-block:: toml
+
+         [project]
+         dependencies = ["foo"]
+
+         [project.optional-dependencies]
+         mytool = ["bar"]
+         theirtool = ["baz"]
+
+      and the session definition file contains ::
+
+          @dep("%pyproject")
+          @dep("linter")
+          class MyTool(Command):
+              ...
+
+      then the dependencies for ``MyTool`` will be ``linter``, ``foo``, and
+      ``bar``.
+
       Note that when :xarg:`spec` is :obj:`None` then :obj:`None` overrides all
       specifiers of loaded dependencies, meaning that the dependencies will be
       removed from the set instead of added.
@@ -434,8 +457,7 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
         raise ValueError("Dependency name must not be empty")
 
     if depname.startswith("%"):
-        dep_spec: tuple[str, str]
-        for dep_spec in __dep_special(depname[1:]):
+        for dep_spec in __dep_special(depname[1:], command.__name__.lower()):
             __dep(
                 command, dep_spec[0], dep_spec[1] if spec is not None else None
             )
@@ -467,11 +489,14 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
     command.DEFS[KW_DEPS][pkg_name] = pkg_spec
 
 
-def __dep_special(depname: str) -> Generator[tuple[str, str], None, None]:
+def __dep_special(
+    depname: str, cmdname: str
+) -> Generator[tuple[str, str], None, None]:
     """
     Handle the special dependency case.
 
     :param depname: The special dependency case name
+    :param cmdname: The session command class name in lower case
     :return: the generator yielding pairs where each pair contains the
         dependency name and specifier
     :raises ValueError: when :xarg:`depname` is not a valid special dependency
@@ -479,7 +504,7 @@ def __dep_special(depname: str) -> Generator[tuple[str, str], None, None]:
     """
     depname = depname.strip()
     if depname == FROM_PYPROJECT:
-        for req in project_dependencies():
+        for req in project_dependencies(cmdname):
             yield (req.name, str(req)[len(req.name) :].strip())
     else:
         raise ValueError(f"Unknown special dependency case name: %{depname}")

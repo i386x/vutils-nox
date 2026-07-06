@@ -93,7 +93,7 @@ from vutils.nox.command import (
 )
 from vutils.nox.decorators import KW_REQUIRES, KW_TAGS, add, cfg, dep
 from vutils.nox.pkgspec import KW_ALL, LocalDist
-from vutils.nox.project import project_name, project_pythons
+from vutils.nox.project import project_name, project_pythons, project_sessions
 from vutils.nox.utils import (
     DANGER_ENV_VARS,
     DIST_DIR_NAME,
@@ -112,7 +112,7 @@ from vutils.nox.utils import (
 )
 
 if TYPE_CHECKING:
-    from vutils.nox import MatrixArgs
+    from vutils.nox.typing import MatrixArgs
 
 #: Run the check subset of linters
 CHECK_TAG = "check"
@@ -722,9 +722,13 @@ if __name__ == "__main__":
         "extend-ignore": "E203,E302,W503",
         # Disable warnings conflicting with other linters:
         #   E301 expected 1 blank line, found 0
-        #        - disabled for `__init__.pyi` as `black` demands no blank
-        #          lines between method stubs
-        "per-file-ignores": "__init__.pyi:E301",
+        #        - disabled for type stubs as `black` demands no blank lines
+        #          between method stubs
+        #   E305 expected 2 blank lines after class or function definition,
+        #        found 1
+        #        - disabled for type stubs as `black` demands 1 blank line
+        #          after class or function definitions
+        "per-file-ignores": "*.pyi:E301,E305",
         "show-source": True,
         "statistics": True,
         "doctests": True,
@@ -792,9 +796,18 @@ class Pylint(Linter):
             return
         args = [
             "pylint",
+            "--init-hook", "import mypy; import mypy.plugin",
             "--rcfile",
             self.config(f".{self.name}rc.toml"),
         ]
+        sessions = project_sessions()
+        if (
+            sessions
+            and sessions.pylint
+            and sessions.pylint.extension_pkg_whitelist
+        ):
+            exts = ",".join(sessions.pylint.extension_pkg_whitelist)
+            args.extend(["--extension-pkg-whitelist", exts])
         args.extend(dirs)
         session.run(*args)
 
@@ -822,8 +835,10 @@ class Pylint(Linter):
         "extra_checks": True,
         "strict_equality": True,
         "strict": True,
+        "show_traceback": True,
         "warn_incomplete_stub": True,
         "warn_unused_configs": True,
+        "plugins": "vutils.nox.mypy",
     },
 )
 @dep("%pyproject")
@@ -844,5 +859,5 @@ class Mypy(Linter):
             "--config-file",
             self.config(f".{self.name}.ini"),
             "-p",
-            package_name(),
+            self.package,
         )

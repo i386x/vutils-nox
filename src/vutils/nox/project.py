@@ -68,6 +68,19 @@ class PyProjectProject(BaseModel):
     dependencies: Sequence[
         Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     ]
+    optional_dependencies: Annotated[
+        Mapping[
+            str,
+            Sequence[
+                Annotated[
+                    str,
+                    StringConstraints(strip_whitespace=True, min_length=1),
+                ]
+            ],
+        ]
+        | None,
+        Field(alias="optional-dependencies"),
+    ] = None
     license_files: Annotated[
         Sequence[
             Annotated[
@@ -148,10 +161,39 @@ class PyProjectSetuptools(BaseModel):
     packages: PyProjectPackages | None = None
 
 
+class PyProjectVutilsNoxPylint(BaseModel):
+    """The ``[tool.vutils-nox.sessions.pylint]`` section data model."""
+
+    extension_pkg_whitelist: Annotated[
+        Sequence[
+            Annotated[
+                str, StringConstraints(strip_whitespace=True, min_length=1)
+            ]
+        ]
+        | None,
+        Field(alias="extension-pkg-whitelist"),
+    ] = None
+
+
+class PyProjectVutilsNoxSessions(BaseModel):
+    """The ``[tool.vutils-nox.sessions]`` section data model."""
+
+    pylint: PyProjectVutilsNoxPylint | None = None
+
+
+class PyProjectVutilsNox(BaseModel):
+    """The ``[tool.vutils-nox]`` section data model."""
+
+    sessions: PyProjectVutilsNoxSessions | None = None
+
+
 class PyProjectTool(BaseModel):
     """The ``[tool]`` data model."""
 
     setuptools: PyProjectSetuptools | None = None
+    vutils_nox: Annotated[
+        PyProjectVutilsNox | None, Field(alias="vutils-nox")
+    ] = None
 
 
 class PyProject(BaseModel):
@@ -242,6 +284,19 @@ def get_dependencies(pyproject: PyProject) -> Iterable[Requirement]:
 
 
 @functools.cache
+def get_optional_dependencies(
+    pyproject: PyProject,
+) -> Mapping[str, Iterable[Requirement]]:
+    """
+    Get the value of ``project.optional-dependencies``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the list of optional dependencies
+    """
+    return get_metadata(pyproject).optional_dependencies
+
+
+@functools.cache
 def get_license_files(pyproject: PyProject) -> Iterable[os.PathLike[str]]:
     """
     Get the value of ``project.license-files``.
@@ -311,6 +366,26 @@ def get_where(pyproject: PyProject) -> Iterable[str] | None:
 
 
 @functools.cache
+def get_vutils_nox_sessions(
+    pyproject: PyProject,
+) -> PyProjectVutilsNoxSessions | None:
+    """
+    Get the value of ``tool.vutils-nox.sessions``.
+
+    :param pyproject: The ``pyproject.toml`` data
+    :return: the content of ``tool.vutils-nox.sessions`` or :obj:`None` if it
+        is not present in :xarg:`pyproject`
+    """
+    tool = pyproject.tool
+    if tool is None:
+        return None
+    vutils_nox = tool.vutils_nox
+    if vutils_nox is None:
+        return None
+    return vutils_nox.sessions
+
+
+@functools.cache
 def project_name() -> str:
     """
     Return the name of the project.
@@ -335,13 +410,26 @@ def project_pythons() -> Iterable[str]:
 
 
 @functools.cache
-def project_dependencies() -> Iterable[str]:
+def project_dependencies(optional: str | None = None) -> Iterable[Requirement]:
     """
     Return the list of project dependencies.
 
+    :param optional: The name of optional project dependencies to include, if
+        specified
     :return: the list of project dependencies
     """
-    return get_dependencies(load_pyproject())
+    pyproject = load_pyproject()
+    deps = list(get_dependencies(pyproject))
+    if optional is not None:
+        deps += get_optional_dependencies(pyproject).get(optional, [])
+    return deps
+
+
+@functools.cache
+def project_sessions() -> PyProjectVutilsNoxSessions | None:
+    """
+    """
+    return get_vutils_nox_sessions(load_pyproject())
 
 
 def resolve_dynamic_version(session: Session, pyproject: PyProject) -> Version:

@@ -55,7 +55,7 @@ from vutils.nox.utils import (
 )
 
 if TYPE_CHECKING:
-    from vutils.nox import StrPath
+    from vutils.nox.typing import StrPath
 
 #: Keywords
 KW_ALL: Literal["all"] = "all"

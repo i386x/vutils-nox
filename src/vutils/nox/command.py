@@ -40,7 +40,7 @@ from vutils.nox.state import (
 from vutils.nox.utils import identical
 
 if TYPE_CHECKING:
-    from vutils.nox import (
+    from vutils.nox.typing import (
         ActionType,
         CommandArgs,
         CommandDefs,
