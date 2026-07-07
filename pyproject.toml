@@ -66,4 +66,5 @@ version = {attr = "vutils.nox.version.__version__"}
 where = ["src"]
 
 [tool.vutils-nox.sessions.pylint]
-extension-pkg-whitelist = ["mypy"]
+init-hook = "import mypy; import mypy.plugin"
+extension-pkg-allow-list = ["mypy"]

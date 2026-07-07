@@ -164,14 +164,19 @@ class PyProjectSetuptools(BaseModel):
 class PyProjectVutilsNoxPylint(BaseModel):
     """The ``[tool.vutils-nox.sessions.pylint]`` section data model."""
 
-    extension_pkg_whitelist: Annotated[
+    init_hook: Annotated[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+        | None,
+        Field(alias="init-hook"),
+    ] = None
+    extension_pkg_allow_list: Annotated[
         Sequence[
             Annotated[
                 str, StringConstraints(strip_whitespace=True, min_length=1)
             ]
         ]
         | None,
-        Field(alias="extension-pkg-whitelist"),
+        Field(alias="extension-pkg-allow-list"),
     ] = None
 
 
@@ -421,15 +426,61 @@ def project_dependencies(optional: str | None = None) -> Iterable[Requirement]:
     pyproject = load_pyproject()
     deps = list(get_dependencies(pyproject))
     if optional is not None:
-        deps += get_optional_dependencies(pyproject).get(optional, [])
+        deps.extend(get_optional_dependencies(pyproject).get(optional, []))
     return deps
 
 
 @functools.cache
 def project_sessions() -> PyProjectVutilsNoxSessions | None:
     """
+    Return the ``tool.vutils-nox.sessions`` configuration.
+
+    :return: the ``tool.vutils-nox.sessions`` configuration or :obj:`None` if
+        it is not available
     """
     return get_vutils_nox_sessions(load_pyproject())
+
+
+@functools.cache
+def pylint_extension_pkgs() -> Iterable[str]:
+    """
+    Return ``tool.vutils-nox.sessions.pylint.extension-pkg-allow-list``.
+
+    :return: ``tool.vutils-nox.sessions.pylint.extension-pkg-allow-list`` as a
+        command line argument directly consumable by ``pylint`` command line
+        interface or iterable with no items if unspecified
+    """
+    sessions = project_sessions()
+    if sessions is None:
+        return []
+    pylint = sessions.pylint
+    if pylint is None:
+        return []
+    extension_pkgs = pylint.extension_pkg_allow_list
+    if extension_pkgs is None:
+        return []
+    return ["--extension-pkg-allow-list", ",".join(extension_pkgs)]
+
+
+@functools.cache
+def pylint_init_hook() -> Iterable[str]:
+    """
+    Return ``tool.vutils-nox.sessions.pylint.init-hook``.
+
+    :return: ``tool.vutils-nox.sessions.pylint.init-hook`` as a command line
+        argument directly consumable by ``pylint`` command line interface or
+        iterable with no items if unspecified
+    """
+    sessions = project_sessions()
+    if sessions is None:
+        return []
+    pylint = sessions.pylint
+    if pylint is None:
+        return []
+    init_hook = pylint.init_hook
+    if init_hook is None:
+        return []
+    return ["--init-hook", init_hook]
 
 
 def resolve_dynamic_version(session: Session, pyproject: PyProject) -> Version:

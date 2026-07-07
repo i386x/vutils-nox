@@ -93,7 +93,12 @@ from vutils.nox.command import (
 )
 from vutils.nox.decorators import KW_REQUIRES, KW_TAGS, add, cfg, dep
 from vutils.nox.pkgspec import KW_ALL, LocalDist
-from vutils.nox.project import project_name, project_pythons, project_sessions
+from vutils.nox.project import (
+    project_name,
+    project_pythons,
+    pylint_extension_pkgs,
+    pylint_init_hook,
+)
 from vutils.nox.utils import (
     DANGER_ENV_VARS,
     DIST_DIR_NAME,
@@ -794,22 +799,14 @@ class Pylint(Linter):
         dirs = project_dirs(relative=True)
         if len(dirs) == 0:
             return
-        args = [
+        session.run(
             "pylint",
-            "--init-hook", "import mypy; import mypy.plugin",
+            *pylint_init_hook(),
             "--rcfile",
             self.config(f".{self.name}rc.toml"),
-        ]
-        sessions = project_sessions()
-        if (
-            sessions
-            and sessions.pylint
-            and sessions.pylint.extension_pkg_whitelist
-        ):
-            exts = ",".join(sessions.pylint.extension_pkg_whitelist)
-            args.extend(["--extension-pkg-whitelist", exts])
-        args.extend(dirs)
-        session.run(*args)
+            *pylint_extension_pkgs(),
+            *dirs,
+        )
 
 
 @add(matrix=linter_matrix(), reuse_venv=True, default=True)
