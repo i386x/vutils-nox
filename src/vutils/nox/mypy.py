@@ -10,7 +10,7 @@
 
 import contextlib
 from collections.abc import Callable, Iterable, Sequence
-from typing import Generator
+from typing import Generator, TypeVar
 
 from mypy.checker import TypeChecker
 from mypy.nodes import ARG_POS, ARG_STAR, ARG_STAR2, TypeAlias, TypeInfo
@@ -21,6 +21,7 @@ from mypy.plugin import (
     Plugin,
 )
 from mypy.type_visitor import TypeTranslator
+from mypy.typeanal import TypeAnalyser
 from mypy.types import (
     AnyType,
     CallableType,
@@ -40,19 +41,47 @@ from mypy.types import (
     get_proper_type,
 )
 
+#: Names of special types and functions meaningful only within the context of
+#: this plugin
+FIX_DECORATOR_FULLNAME = "vutils.nox.utils.fix_decorator_type"
+
 #: Names of some important types
+ANY_TYPE = "typing.Any"
+CALLABLE_TYPE = "typing.Callable"
+DICT_TYPE = "builtins.dict"
+FUNCTION_TYPE = "builtins.function"
+ITERABLE_TYPE = "typing.Iterable"
 OBJECT_TYPE = "builtins.object"
+STR_TYPE = "builtins.str"
+TUPLE_TYPE = "builtins.tuple"
 
 #: Lists of cases that need to be handled specially by the plugin
 COMPARISON_PROTOCOLS = (
     "_typeshed.SupportsDunderLT",
     "_typeshed.SupportsDunderGT",
 )
-FUNCTIONS_ACCEPTING_COMPARISON_PROTOCOLS = ("builtins.max", "builtins.min")
+FUNCTIONS_DOING_COMPARISONS = ("builtins.max", "builtins.min")
 
 #: Modes of operation of :class:`.FixSupportsComparison` translator
 NORMAL = 0
 REPLACE = 1
+
+#: Type variables
+_T = TypeVar("_T")
+
+
+def verify_type(obj: object, typ: type[_T]) -> _T:
+    """
+    Verify that :xarg:`obj` is an instance of :xarg:`typ`.
+
+    :param obj: The object
+    :param typ: The expected type
+    :return: the object
+    :raises TypeError: when :xarg:`obj` is not an instance of :xarg:`typ`
+    """
+    if not isinstance(obj, typ):
+        raise TypeError(f"Expected an instance of {typ!r}")
+    return obj
 
 
 def new_typevar_id(
@@ -129,8 +158,8 @@ class FixSupportsComparison(TypeTranslator):
     """
     Translate :class:`object` in comparison protocols to the given type.
 
-    Translate :class:`object` in ``_typeshed.SupportsDunderLT`` and
-    ``_typeshed.SupportsDunderGT`` argument to the given type.
+    Translate :class:`object` in :class:`_typeshed.SupportsDunderLT` and
+    :class:`_typeshed.SupportsDunderGT` argument to the given type.
     """
 
     #: The new type that will replace :class:`object`
@@ -205,10 +234,8 @@ class FixSupportsComparison(TypeTranslator):
 
         :param t: The :class:`mypy.types.ParamSpecType` type
         :return: the translated :class:`mypy.types.ParamSpecType` type
+        :raises TypeError: when a type translation fails
         """
-        prefix = t.prefix.accept(self)
-        if not isinstance(prefix, Parameters):
-            raise TypeError("`prefix` must be of `Parameters` type")
         return ParamSpecType(
             t.name,
             t.fullname,
@@ -218,7 +245,7 @@ class FixSupportsComparison(TypeTranslator):
             default=t.default.accept(self),
             line=t.line,
             column=t.column,
-            prefix=prefix,
+            prefix=verify_type(t.prefix.accept(self), Parameters),
         )
 
     def visit_parameters(self, t: Parameters, /) -> Type:
@@ -253,10 +280,11 @@ class FixSupportsComparison(TypeTranslator):
 
         :param variables: The list of type variables
         :return: the list of translated type variables
+        :raises TypeError: when a type translation fails
         """
-        if not isinstance(variables, (list, tuple)):
-            raise TypeError("`variables` should be list or tuple")
-        return type(variables)(v.accept(self) for v in variables)
+        return [
+            verify_type(v.accept(self), TypeVarLikeType) for v in variables
+        ]
 
     def visit_type_alias_type(self, t: TypeAliasType, /) -> Type:
         """
@@ -272,7 +300,9 @@ class FixSupportsComparison(TypeTranslator):
                 t.alias.module,
                 t.alias.line,
                 t.alias.column,
-                alias_tvars=self.translate_variables(t.alias.alias_tvars),
+                alias_tvars=list(
+                    self.translate_variables(t.alias.alias_tvars)
+                ),
                 no_args=t.alias.no_args,
                 normalized=t.alias.normalized,
                 eager=t.alias.eager,
@@ -295,9 +325,46 @@ def make_object(ctx: AnalyzeTypeContext) -> Type:
 
     :param ctx: The type analyzer context
     :return: the :class:`object` type
+    :raises TypeError: when :xarg:`ctx.api` is not an instance of
+        :class:`mypy.typeanal.TypeAnalyser`
     """
     t = ctx.type
-    return ctx.api.named_type(OBJECT_TYPE, line=t.line, column=t.column)
+    api = verify_type(ctx.api, TypeAnalyser)
+    return api.named_type(OBJECT_TYPE, line=t.line, column=t.column)
+
+
+def make_universal_callable(
+    ctx: AnalyzeTypeContext,
+    ret_type: Type | None = None,
+    with_location: bool = True,
+) -> Type:
+    """
+    Make a ``Callable[[*object, **object], T]`` type.
+
+    :param ctx: The type analyzer context
+    :param ret_type: The return type of the returned callable type
+    :param with_location: The flag indicating whether line and column from the
+        context should be part of the returned callable type
+    :return: the new callable type
+    :raises TypeError: when :xarg:`ctx.api` is not an instance of
+        :class:`mypy.typeanal.TypeAnalyser`
+
+    If :xarg:`ret_type` is :obj:`None`, make
+    ``Callable[[*object, **object], object]`` type. Otherwise, make
+    ``Callable[[*object, **object], ret_type]`` type.
+    """
+    api = verify_type(ctx.api, TypeAnalyser)
+    object_type = (
+        make_object(ctx) if with_location else api.named_type(OBJECT_TYPE)
+    )
+    return CallableType(
+        [object_type, object_type],
+        [ARG_STAR, ARG_STAR2],
+        [None, None],
+        ret_type=object_type if ret_type is None else ret_type,
+        fallback=api.named_type(FUNCTION_TYPE),
+        is_ellipsis_args=False,
+    ).accept(api)
 
 
 def handle_unspecified_parameters_in_callable(ctx: AnalyzeTypeContext) -> Type:
@@ -306,6 +373,8 @@ def handle_unspecified_parameters_in_callable(ctx: AnalyzeTypeContext) -> Type:
 
     :param ctx: The type analyzer context
     :return: the sanitized :class:`typing.Callable`
+    :raises TypeError: when :xarg:`ctx.api` is not an instance of
+        :class:`mypy.typeanal.TypeAnalyser`
 
     These forms of :class:`typing.Callable`s contain :class:`typing.Any` so
     they are converted to ``Callable[[*object, **object], T]`` before ``mypy``
@@ -314,35 +383,155 @@ def handle_unspecified_parameters_in_callable(ctx: AnalyzeTypeContext) -> Type:
     handled further in followup hooks.
     """
     t = ctx.type
-    api = ctx.api
-    fallback = api.named_type("builtins.function")
+    api = verify_type(ctx.api, TypeAnalyser)
 
     # Treat special cases before they hit `api.analyze_callable_type(t)`
     if len(t.args) == 0:
-        object_type = api.named_type(OBJECT_TYPE, line=t.line, column=t.column)
-        return CallableType(
-            [object_type, object_type],
-            [ARG_STAR, ARG_STAR2],
-            [None, None],
-            ret_type=object_type,
-            fallback=fallback,
-            is_ellipsis_args=False,
-        ).accept(api)
+        return make_universal_callable(ctx)
     if len(t.args) == 2:
         callable_args = t.args[0]
         ret_type = t.args[1]
         if isinstance(callable_args, EllipsisType):
-            object_type = api.named_type("builtins.object")
-            return CallableType(
-                [object_type, object_type],
-                [ARG_STAR, ARG_STAR2],
-                [None, None],
-                ret_type=ret_type,
-                fallback=fallback,
-                is_ellipsis_args=False,
-            ).accept(api)
-    # Fallback the rest of cases to `mypy` internal logic
+            return make_universal_callable(ctx, ret_type, with_location=False)
+    # Fallback the rest of cases to the `mypy` internal logic
     return api.analyze_callable_type(t)
+
+
+def adjust_supports_comparison(ctx: FunctionSigContext) -> FunctionLike:
+    """
+    Adjust a function accepting arguments implementing a comparison protocol.
+
+    :param ctx: The function signature context
+    :return: the adjusted function signature
+    :raises TypeError: when the adjusted function signature is not an instance
+        of :class:`mypy.types.CallableType`
+
+    If a function signature contains ``_typeshed.SupportsDunderLT[object]`` or
+    ``_typeshed.SupportsDunderGT[object]`` then replace ``object`` with the
+    type deduced from the first passed positional argument. If that argument is
+    iterable, use the underlying type (the type of iterable's elements).
+    """
+    args = ctx.args
+    sig = ctx.default_signature
+    api = ctx.api
+    if len(args) == 0 or len(args[0]) == 0:
+        return sig
+    tt = get_proper_type(api.get_expression_type(args[0][0]))
+    # Covers also the `Generator[T, None, None]` case
+    if isinstance(tt, Instance) and is_subtype_of(tt.type, ITERABLE_TYPE):
+        tt = get_proper_type(tt.args[0])
+    return verify_type(sig.accept(FixSupportsComparison(tt)), CallableType)
+
+
+def adjust_universal_callable_in_decorator(ctx: FunctionContext) -> Type:
+    """
+    Adjust ``Callable[[*object, **object], T]`` to ``Callable[P, T]``.
+
+    :param ctx: The function context
+    :return: the adjusted return type for the analyzed function that triggered
+        this hook function
+    :raises TypeError: when :xarg:`ctx.api` is not an instance of
+        :class:`mypy.checker.TypeChecker`
+
+    Use this function as a hook to adjust a decorator signature, e.g. in a
+    context like ::
+
+        @our_deco(their_deco)
+        def our_function():
+            ...
+
+    where ``our_deco`` is an identity function triggering this hook function
+    (``mypy`` does not call ``get_function_signature_hook`` on decorators).
+    This ensures that ``their_deco`` signature can be accessed via
+    :xarg:`ctx.default_return_type`.
+
+    First, check if ``their_deco`` has a signature of the form
+    ``Callable[[C], T]``, where ``C`` is a callable. If not, then tell ``mypy``
+    to fail.
+
+    Second, if ``C`` is of the form ``Callable[[*object, **object], U]``,
+    replace it with ``Callable[P, U]``, where ``P`` is newly introduced
+    parameter specification, roughly equal to ``typing.ParamSpec("P")``, not
+    conflicting with other type variables.
+    """
+    emsg_deco = f"{FIX_DECORATOR_FULLNAME} must be used on a decorator"
+    nmsg_redu = f"{FIX_DECORATOR_FULLNAME} is redundant at this place"
+    api = verify_type(ctx.api, TypeChecker)
+    typ = ctx.default_return_type
+    if not isinstance(typ, CallableType):
+        api.fail(emsg_deco, ctx.context)
+        return typ
+    if (
+        len(typ.arg_types) != 1
+        or not isinstance(typ.arg_types[0], CallableType)
+        or typ.arg_kinds != [ARG_POS]
+    ):
+        api.fail(emsg_deco, ctx.context)
+        return typ
+    arg_typ = typ.arg_types[0]
+    if not can_accept_anything(arg_typ):
+        api.note(nmsg_redu, ctx.context)
+        return typ
+    tvid = new_typevar_id(typ.variables, FIX_DECORATOR_FULLNAME)
+    p_bare = new_paramspec(api, "P", tvid)
+    p_args = p_bare.with_flavor(ParamSpecFlavor.ARGS)
+    p_args.upper_bound = api.named_generic_type(
+        TUPLE_TYPE, [api.named_type(OBJECT_TYPE)]
+    )
+    p_kwargs = p_bare.with_flavor(ParamSpecFlavor.KWARGS)
+    p_kwargs.upper_bound = api.named_generic_type(
+        DICT_TYPE, [api.named_type(STR_TYPE), api.named_type(OBJECT_TYPE)]
+    )
+    variables = (p_bare,) + typ.variables
+    return typ.copy_modified(
+        arg_types=[arg_typ.copy_modified(arg_types=[p_args, p_kwargs])],
+        variables=variables,
+    )
+
+
+class TranslateEmailHeaderDecodeHeaderRt:
+    """"""
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        """"""
+        self.state = EXPECT_LIST
+
+def adjust_email_header_decode_header_rt(ctx: FunctionContext) -> Type:
+    """
+    Adjust :func:`email.header.decode_header` return type.
+
+    :param ctx: The function context
+    :return: the adjusted return type of :func:`email.header.decode_header`
+
+    The original return type of :func:`email.header.decode_header` is
+    ``list[tuple[Any, Any | None]]``, which after replacing :class:`typing.Any`
+    with :class:`object` becomes ``list[tuple[object, object | None]]``.
+    According to the semantics of :func:`email.header.decode_header`, the
+    correct return type is ``list[tuple[str | bytes, str | None]]``.
+    """
+    api = verify_type(ctx.api, TypeChecker)
+    rt = ctx.default_return_type
+    if not isinstance(rt, Instance) or rt.type.fullname != LIST_TYPE:
+        return rt
+    if len(rt.args) != 1:
+        return rt
+    return rt.copy_modified(args=[])
+
+    tt = rt.args[0]
+    if not isinstance(tt, Instance) or tt.type.fullname != TUPLE_TYPE:
+        return rt
+    if len(tt.args) != 2:
+        return rt
+    ttx = tt.args[0]
+    if not isinstance(ttx, Instance) or ttx.type.fullname != OBJECT_TYPE:
+        return rt
+    tty = tt.args[1]
+    if not isinstance(tty, UnionType):
+        return rt
+    if len(tty.items) != 2:
+        return rt
 
 
 class LiftAnyPlugin(Plugin):
@@ -353,82 +542,53 @@ class LiftAnyPlugin(Plugin):
     def get_type_analyze_hook(
         self, fullname: str
     ) -> Callable[[AnalyzeTypeContext], Type] | None:
-        if fullname == "typing.Any":
+        """
+        Return a hook called when a type is met.
+
+        :param fullname: The fully qualified name of the type being analyzed
+        :return: the hook called when a type is met
+        """
+        if fullname == ANY_TYPE:
             return make_object
-        if fullname == "typing.Callable":
+        if fullname == CALLABLE_TYPE:
             return handle_unspecified_parameters_in_callable
         return None
 
     def get_function_signature_hook(
         self, fullname: str
     ) -> Callable[[FunctionSigContext], FunctionLike] | None:
-        if fullname in FUNCTIONS_ACCEPTING_COMPARISON_PROTOCOLS:
+        """
+        Return a hook called when a function signature is checked.
 
-            def hook(ctx: FunctionSigContext) -> FunctionLike:
-                args = ctx.args
-                sig = ctx.default_signature
-                if len(args) == 0 and len(args[0]) == 0:
-                    return sig
-                tt = get_proper_type(ctx.api.get_expression_type(args[0][0]))
-                if isinstance(tt, Instance) and is_subtype_of(
-                    tt.type, "typing.Iterable"
-                ):
-                    tt = tt.args[0]
-                return sig.accept(FixSupportsComparison(tt))
-
-            return hook
+        :param fullname: The fully qualified name of the function being
+            analyzed
+        :return: the hook called when a function signature is met
+        """
+        if fullname in FUNCTIONS_DOING_COMPARISONS:
+            return adjust_supports_comparison
         return None
 
     def get_function_hook(
         self, fullname: str
     ) -> Callable[[FunctionContext], Type] | None:
-        if fullname == "vutils.nox.utils.fix_decorator_type":
+        """
+        Return a hook called to adjust a function's return type.
 
-            def hook(ctx: FunctionContext) -> Type:
-                emsg_deco = f"{fullname} must be used on a decorator"
-                nmsg_redu = f"{fullname} is redundant at this place"
-                api = ctx.api
-                typ = ctx.default_return_type
-                if not isinstance(typ, CallableType):
-                    api.fail(emsg_deco, ctx.context)
-                    return typ
-                if (
-                    len(typ.arg_types) != 1
-                    or not isinstance(typ.arg_types[0], CallableType)
-                    or typ.arg_kinds != [ARG_POS]
-                ):
-                    api.fail(emsg_deco, ctx.context)
-                    return typ
-                arg_typ = typ.arg_types[0]
-                if not can_accept_anything(arg_typ):
-                    api.note(nmsg_redu, ctx.context)
-                    return typ
-                tvid = new_typevar_id(typ.variables, fullname)
-                p_bare = new_paramspec(api, "P", tvid)
-                p_args = p_bare.with_flavor(ParamSpecFlavor.ARGS)
-                p_args.upper_bound = api.named_generic_type(
-                    "builtins.tuple", [api.named_type("builtins.object")]
-                )
-                p_kwargs = p_bare.with_flavor(ParamSpecFlavor.KWARGS)
-                p_kwargs.upper_bound = api.named_generic_type(
-                    "builtins.dict",
-                    [
-                        api.named_type("builtins.str"),
-                        api.named_type("builtins.object"),
-                    ],
-                )
-                variables = (p_bare,) + typ.variables
-                return typ.copy_modified(
-                    arg_types=[
-                        arg_typ.copy_modified(arg_types=[p_args, p_kwargs]),
-                    ],
-                    variables=variables,
-                )
-
-            return hook
+        :param fullname: The fully qualified name of the function being
+            analyzed
+        :return: the hook that is called to do possible adjustments to the
+            function's return type
+        """
+        if fullname == FIX_DECORATOR_FULLNAME:
+            return adjust_universal_callable_in_decorator
         return None
 
 
 def plugin(unused_version: str) -> type[Plugin]:
-    """Return plugin."""
+    """
+    Return the plugin.
+
+    :param unused_version: The version of ``mypy``
+    :return: the plugin
+    """
     return LiftAnyPlugin

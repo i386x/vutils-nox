@@ -30,6 +30,7 @@ from pyproject_metadata import StandardMetadata
 from vutils.nox.utils import (
     EV_PYTHONPATH,
     IMPORT_ERROR_RE,
+    fix_decorator_type,
     resolve_path,
     run_script,
     setenv,
@@ -219,8 +220,8 @@ class PyProject(BaseModel):
         return id(self)
 
 
-@functools.cache
-def load_pyproject(path: os.PathLike[str] | None = None) -> PyProject:
+@fix_decorator_type(functools.cache)
+def load_pyproject(path: pathlib.Path | None = None) -> PyProject:
     """
     Load ``pyproject.toml``.
 
@@ -244,7 +245,7 @@ def load_pyproject(path: os.PathLike[str] | None = None) -> PyProject:
     return PyProject.model_validate(load_toml(path))
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def get_metadata(pyproject: PyProject) -> StandardMetadata:
     """
     Extract metadata from the ``pyproject.toml`` content.
@@ -255,7 +256,7 @@ def get_metadata(pyproject: PyProject) -> StandardMetadata:
     return StandardMetadata.from_pyproject(pyproject.model_dump(by_alias=True))
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def get_name(pyproject: PyProject) -> str:
     """
     Get the value of ``project.name``.
@@ -266,8 +267,8 @@ def get_name(pyproject: PyProject) -> str:
     return get_metadata(pyproject).name
 
 
-@functools.cache
-def get_version(pyproject: PyProject) -> Version:
+@fix_decorator_type(functools.cache)
+def get_version(pyproject: PyProject) -> Version | None:
     """
     Get the value of ``project.version``.
 
@@ -277,7 +278,7 @@ def get_version(pyproject: PyProject) -> Version:
     return get_metadata(pyproject).version
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def get_dependencies(pyproject: PyProject) -> Iterable[Requirement]:
     """
     Get the value of ``project.dependencies``.
@@ -288,7 +289,7 @@ def get_dependencies(pyproject: PyProject) -> Iterable[Requirement]:
     return get_metadata(pyproject).dependencies
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def get_optional_dependencies(
     pyproject: PyProject,
 ) -> Mapping[str, Iterable[Requirement]]:
@@ -301,8 +302,8 @@ def get_optional_dependencies(
     return get_metadata(pyproject).optional_dependencies
 
 
-@functools.cache
-def get_license_files(pyproject: PyProject) -> Iterable[os.PathLike[str]]:
+@fix_decorator_type(functools.cache)
+def get_license_files(pyproject: PyProject) -> Iterable[pathlib.Path] | None:
     """
     Get the value of ``project.license-files``.
 
@@ -312,7 +313,7 @@ def get_license_files(pyproject: PyProject) -> Iterable[os.PathLike[str]]:
     return get_metadata(pyproject).license_files
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def get_dynamic(pyproject: PyProject, field: str) -> tuple[str, str] | None:
     """
     Get the details about a dynamically specified field.
@@ -345,7 +346,7 @@ def get_dynamic(pyproject: PyProject, field: str) -> tuple[str, str] | None:
     return next(iter(data.items()))
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def get_where(pyproject: PyProject) -> Iterable[str] | None:
     """
     Get the value of ``tool.setuptools.packages.find.where``.
@@ -370,7 +371,7 @@ def get_where(pyproject: PyProject) -> Iterable[str] | None:
     return find.where
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def get_vutils_nox_sessions(
     pyproject: PyProject,
 ) -> PyProjectVutilsNoxSessions | None:
@@ -390,7 +391,7 @@ def get_vutils_nox_sessions(
     return vutils_nox.sessions
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def project_name() -> str:
     """
     Return the name of the project.
@@ -400,7 +401,7 @@ def project_name() -> str:
     return get_name(load_pyproject())
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def project_pythons() -> Iterable[str]:
     """
     Return the list of Python versions supported by the project.
@@ -414,7 +415,7 @@ def project_pythons() -> Iterable[str]:
     ]
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def project_dependencies(optional: str | None = None) -> Iterable[Requirement]:
     """
     Return the list of project dependencies.
@@ -430,7 +431,7 @@ def project_dependencies(optional: str | None = None) -> Iterable[Requirement]:
     return deps
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def project_sessions() -> PyProjectVutilsNoxSessions | None:
     """
     Return the ``tool.vutils-nox.sessions`` configuration.
@@ -441,7 +442,7 @@ def project_sessions() -> PyProjectVutilsNoxSessions | None:
     return get_vutils_nox_sessions(load_pyproject())
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def pylint_extension_pkgs() -> Iterable[str]:
     """
     Return ``tool.vutils-nox.sessions.pylint.extension-pkg-allow-list``.
@@ -462,7 +463,7 @@ def pylint_extension_pkgs() -> Iterable[str]:
     return ["--extension-pkg-allow-list", ",".join(extension_pkgs)]
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def pylint_init_hook() -> Iterable[str]:
     """
     Return ``tool.vutils-nox.sessions.pylint.init-hook``.
