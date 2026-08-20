@@ -62,38 +62,6 @@ DATAPATH_SEP = "::"
 IMPORT_ERROR_RE = re.compile("Traceback|ModuleNotFoundError|ImportError")
 
 
-def fix_decorator_type(func: T) -> T:
-    """
-    Help ``mypy`` plugin to fix a decorator type.
-
-    :param func: The decorator function
-    :return: the decorator function with fixed signature
-
-    Some libraries may have decorators annotated as
-    ``Callable[[Callable[..., T]], Wrapper[T]]``, which is expanded by ``mypy``
-    to ``def [T](def (*Any, **Any) -> T) -> Wrapper[T]``, which is adjusted by
-    our ``mypy`` plugin to
-    ``def [T](def (*object, **object) -> T) -> Wrapper[T]``. However, functions
-    like ``def (int, float) -> T`` cannot be passed to places where
-    ``def (*object, **object) -> T`` is expected, even when this seems to be
-    correct, due to the ``mypy`` type checking rules. Thus, when
-    ``def (*object, **object) -> ...`` is detected in a decorator signature it
-    is replaced with ``def [**P](*P.args, **P.kwargs) -> ...``; in our case:
-    ``def [**P, T](def (*P.args, **P.kwargs) -> T) -> Wrapper[T]`` is the final
-    type produced by our plugin. To do this conversion properly, this function
-    must be used as a wrapper around a decorator function to trigger the
-    correct hook provided by our plugin::
-
-        @fix_decorator_type(functools.cache)
-        def sum(x: int, y: int) -> int:
-            return x + y
-
-    Using the decorator directly is not enough at this time since ``mypy`` does
-    not trigger ``get_function_signature_hook`` for decorators.
-    """
-    return func
-
-
 def identical(lhs: object, rhs: object) -> bool:
     """
     Check whether two objects are identical.
