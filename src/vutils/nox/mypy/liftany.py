@@ -9,6 +9,7 @@
 """Plugin that lifts any use of :class:`typing.Any`."""
 
 import functools
+import re
 from collections.abc import Sequence
 
 from mypy.checker import TypeChecker
