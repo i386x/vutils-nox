@@ -9,12 +9,14 @@
 """Patterns and matching over types."""
 
 from collections.abc import Callable, Sequence
+import functools
 
 from mypy.nodes import ARG_POS, ARG_STAR, ARG_STAR2, ArgKind, TypeAlias
 from mypy.types import (
     CallableType,
     Instance,
     LiteralType,
+    NoneType,
     Type,
     TypeAliasType,
     TypeVarLikeType,
@@ -91,7 +93,7 @@ class Pattern[T: Type | Sequence[Type]]:
         """
         Test whether :xarg:`t` matches the pattern.
 
-        :param t: The type or the sequence of types.
+        :param t: The type or the sequence of types
         :return: :obj:`True` if :xarg:`t` matches the pattern
 
         This operation also involves invoking user-defined actions.
@@ -104,7 +106,7 @@ class Pattern[T: Type | Sequence[Type]]:
 
     def __or__(self: Pattern[Type], other: Pattern[Type]) -> UnionTypePattern:
         """
-        Make a pattern for a union of types.
+        Make the pattern for a union of types.
 
         :param other: The type pattern
         :return: the pattern for a union of types made from this and
@@ -134,9 +136,9 @@ class Pattern[T: Type | Sequence[Type]]:
 
 
 class Many[T: Type](Pattern[Sequence[T]]):
-    """A pattern for homogeneous sequence of types."""
+    """A pattern for a homogeneous sequence of types."""
 
-    #: The pattern for the underlying type of the sequence
+    #: The pattern for the underlying type of a sequence of types
     pattern: Pattern[T]
 
     __slots__ = ("pattern",)
@@ -145,14 +147,15 @@ class Many[T: Type](Pattern[Sequence[T]]):
         """
         Initialize the pattern.
 
-        :param pattern: The pattern for the underlying type of the sequence
+        :param pattern: The pattern for the underlying type of a sequence of
+            types
         """
         super().__init__()
         self.pattern = pattern
 
     def match(self, seq: Sequence[T]) -> Sequence[T]:
         """
-        Match the sequence of types.
+        Match a sequence of types.
 
         :param seq: The sequence of types
         :return: the sequence of types where each type is either an element of
@@ -165,7 +168,7 @@ class Many[T: Type](Pattern[Sequence[T]]):
 
 
 class Seq[T: Type](Pattern[Sequence[T]]):
-    """A pattern for finite heterogeneous sequence of types."""
+    """A pattern for a finite heterogeneous sequence of types."""
 
     #: The sequence of patterns
     patterns: Sequence[Pattern[T]]
@@ -186,7 +189,7 @@ class Seq[T: Type](Pattern[Sequence[T]]):
 
     def match(self, seq: Sequence[T]) -> Sequence[T]:
         """
-        Match the sequence of types.
+        Match a sequence of types.
 
         :param seq: The sequence of types
         :return: the sequence of types where each type is either an element of
@@ -200,12 +203,40 @@ class Seq[T: Type](Pattern[Sequence[T]]):
         return [p.match(t) for p, t in zip(self.patterns, seq)]
 
 
+class SimpleTypePattern(Pattern[Type]):
+    """A pattern for simple types."""
+
+    #: The type of a simple type
+    ttype: type[Type]
+
+    __slots__ = ("ttype",)
+
+    def __init__(self, ttype: type[Type]) -> None:
+        """
+        Initialize the pattern.
+
+        :param ttype: The type of a simple type
+        """
+        super().__init__()
+        self.ttype = ttype
+
+    def match(self, t: Type) -> Type:
+        """
+        Match a simple type.
+
+        :param t: The simple type
+        :return: :xarg:`t`
+        :raises .TypeMatchError: on an unsuccessful match
+        """
+        return check(t, self.ttype)
+
+
 class InstancePattern(Pattern[Type]):
     """A pattern for :class:`mypy.types.Instance` types."""
 
-    #: The full name of the instance type
+    #: The full name of an instance type
     fullname: str | None
-    #: The pattern for the instance type arguments
+    #: The pattern for an instance type arguments
     args: Pattern[Sequence[Type]] | None
     #: The pattern for the *last known value*
     last_known_value: Pattern[Type] | None
@@ -224,8 +255,8 @@ class InstancePattern(Pattern[Type]):
         """
         Initialize the pattern.
 
-        :param fullname: The full name of the instance type
-        :param args: The pattern for the instance type arguments
+        :param fullname: The full name of an instance type
+        :param args: The pattern for an instance type arguments
         :param last_known_value: The pattern for the *last known value*
         :param action: The action to be invoked on a successful match
 
@@ -240,7 +271,7 @@ class InstancePattern(Pattern[Type]):
 
     def match(self, t: Type) -> Type:
         """
-        Match the instance type.
+        Match an instance type.
 
         :param t: The instance type
         :return: :xarg:`t` or a modified copy of :xarg:`t` or a custom type
@@ -315,7 +346,7 @@ class Arg:
 
     def match(self, kind: ArgKind, typ: Type, name: str | None) -> Type:
         """
-        Match the argument of a callable type.
+        Match an argument of a callable type.
 
         :param kind: The argument kind
         :param typ: The argument type
@@ -354,10 +385,10 @@ class Args:
 
     def match(self, t: CallableType) -> Sequence[Type]:
         """
-        Match the arguments of a callable type.
+        Match arguments of a callable type.
 
         :param t: The callable type
-        :return: the sequence of argument types where each type is either an
+        :return: the sequence of argument types where each type is either the
             original argument type or its modified copy or a custom type
             based on the original argument type returned by the user-defined
             action
@@ -397,7 +428,7 @@ class CallableTypePattern(Pattern[Type]):
         """
         Initialize the pattern.
 
-        :param args: The pattern for arguments of a callable type
+        :param args: Patterns for arguments of a callable type
         :param ret_type: The pattern for the return type of a callable type
         :param variables: The pattern for type variables of a callable type
         :param action: The action to be invoked on a successful match
@@ -424,7 +455,7 @@ class CallableTypePattern(Pattern[Type]):
 
     def match(self, t: Type) -> Type:
         """
-        Match the callable type.
+        Match a callable type.
 
         :param t: The callable type
         :return: :xarg:`t` or a modified copy of :xarg:`t` or a custom type
@@ -457,7 +488,7 @@ class CallableTypePattern(Pattern[Type]):
 class UnionTypePattern(Pattern[Type]):
     """A pattern for :class:`mypy.types.UnionType` types."""
 
-    #: The pattern for types in the union of types
+    #: The pattern for types in a union of types
     items: Seq[Type]
     #: The action to be invoked on a successful match
     action: UnionAction | None
@@ -470,15 +501,16 @@ class UnionTypePattern(Pattern[Type]):
         """
         Initialize the pattern.
 
-        :param args: Patterns for types in the union of types
+        :param args: Patterns for types in a union of types
         :param action: The action to be invoked on a successful match
         """
+        super().__init__()
         self.items = Seq(args)
         self.action = action
 
     def match(self, t: Type) -> Type:
         """
-        Match the union of types.
+        Match a union of types.
 
         :param t: The union of types
         :return: a modified copy of :args:`t` or a custom type based on
@@ -544,7 +576,7 @@ class TypeVarTypePattern(Pattern[Type]):
 
     def match(self, t: Type) -> Type:
         """
-        Match the type variable.
+        Match a type variable.
 
         :param t: The type variable
         :return: :xarg:`t` or a modified copy of :xarg:`t` or a custom type
@@ -623,7 +655,7 @@ class TypeAliasTypePattern(Pattern[Type]):
 
     def match(self, t: Type) -> Type:
         """
-        Match the type alias.
+        Match a type alias.
 
         :param t: The type alias
         :return: :xarg:`t` or a modified copy of :xarg:`t` or a custom type
@@ -680,6 +712,38 @@ class TypeAliasTypePattern(Pattern[Type]):
         return TypeAliasType(alias, args, tt.line, tt.column)
 
 
+@functools.cache
+def none_t() -> SimpleTypePattern:
+    """
+    Create a pattern for the :obj:`None` type.
+
+    :return: the pattern for the :obj:`None` type
+    """
+    return SimpleTypePattern(NoneType)
+
+
+@functools.cache
+def instance_t(
+    fullname: str,
+    *args: Pattern[Type],
+    last_known_value: Pattern[Type] | None = None,
+    action: InstanceAction | None = None,
+) -> InstancePattern:
+    """
+    Create a pattern for an instance type.
+
+    :param fullname: The full name of an instance type
+    :param args: Patterns for an instance type arguments
+    :param last_known_value: The pattern for the *last known value*
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for an instance type
+    """
+    return InstancePattern(
+        fullname, Seq(*args), last_known_value=last_known_value, action=action
+    )
+
+
+@functools.cache
 def object_t(action: InstanceAction | None = None) -> InstancePattern:
     """
     Create a pattern for :class:`object`.
@@ -687,20 +751,22 @@ def object_t(action: InstanceAction | None = None) -> InstancePattern:
     :param action: The action to be invoked on a successful match
     :return: the pattern for :class:`object`
     """
-    return InstancePattern(OBJECT_TYPE, action=action)
+    return instance_t(OBJECT_TYPE, action=action)
 
 
+@functools.cache
 def parg(t: Pattern[Type], name: str | None = None) -> Arg:
     """
     Create a pattern for a positional argument.
 
     :param t: The pattern for the argument type
     :param name: The name of a positional argument
-    :return: the pattern for the positional argument
+    :return: the pattern for a positional argument
     """
     return Arg(ARG_POS, t, name)
 
 
+@functools.cache
 def pargs(t: Pattern[Type], name: str | None = None) -> Arg:
     """
     Create a pattern for positional-only arguments.
@@ -712,6 +778,7 @@ def pargs(t: Pattern[Type], name: str | None = None) -> Arg:
     return Arg(ARG_STAR, t, name)
 
 
+@functools.cache
 def kargs(t: Pattern[Type], name: str | None = None) -> Arg:
     """
     Create a pattern for key-value-only arguments.
@@ -723,6 +790,7 @@ def kargs(t: Pattern[Type], name: str | None = None) -> Arg:
     return Arg(ARG_STAR2, t, name)
 
 
+@functools.cache
 def callable_t(
     *args: Arg | None,
     ret_type: Pattern[Type] | None = None,
@@ -732,7 +800,7 @@ def callable_t(
     """
     Create a pattern for a callable type.
 
-    :param args: The pattern for arguments of a callable type
+    :param args: Patterns for arguments of a callable type
     :param ret_type: The pattern for the return type of a callable type
     :param variables: The pattern for type variables of a callable type
     :param action: The action to be invoked on a successful match
@@ -743,6 +811,7 @@ def callable_t(
     )
 
 
+@functools.cache
 def universal_callable_t(
     action: CallableAction | None = None,
 ) -> CallableTypePattern:
@@ -754,3 +823,49 @@ def universal_callable_t(
     """
     obj_t = object_t()
     return callable_t(pargs(obj_t), kargs(obj_t), action=action)
+
+
+@functools.cache
+def typevar_t(
+    fullname: str,
+    upper_bound: Pattern[Type],
+    values: Pattern[Sequence[Type]] | None = None,
+    default: Pattern[Type] | None = None,
+    action: TypeVarAction | None = None,
+) -> TypeVarTypePattern:
+    """
+    Create a pattern for a type variable type.
+
+    :param fullname: The full name of a type variable
+    :param upper_bound: The pattern for the upper bound of a type variable
+    :param values: The pattern for the value restrictions of a type variable
+    :param default: The pattern for the default value of a type variable
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for a type variable type
+    """
+    return TypeVarTypePattern(
+        fullname, upper_bound, values=values, default=default, action=action
+    )
+
+
+@functools.cache
+def type_alias(
+    fullname: str,
+    target: Pattern[Type],
+    tvars: Pattern[Sequence[TypeVarLikeType]] | None = None,
+    args: Pattern[Sequence[Type]] | None = None,
+    action: TypeAliasAction | None = None,
+) -> TypeAliasTypePattern:
+    """
+    Create a pattern for a type alias type.
+
+    :param fullname: The full name of a type alias
+    :param target: The pattern for the target type of a type alias
+    :param tvars: The pattern for type variables of a type alias
+    :param args: The pattern for arguments of a type alias
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for a type alias type
+    """
+    return TypeAliasTypePattern(
+        fullname, target, tvars=tvars, args=args, action=action
+    )

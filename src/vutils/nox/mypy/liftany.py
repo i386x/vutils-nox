@@ -8,19 +8,172 @@
 #
 """Plugin that lifts any use of :class:`typing.Any`."""
 
+import functools
 from collections.abc import Sequence
 
 from mypy.checker import TypeChecker
 from mypy.plugin import FunctionContext
 from mypy.types import CallableType, Type, TypeVarLikeType
 
-from vutils.nox.mypy.tpatt import callable_t, parg, universal_callable_t
+from vutils.nox.mypy.tpatt import (
+    Arg,
+    CallableTypePattern,
+    InstanceAction,
+    InstancePattern,
+    Seq,
+    TypeAliasTypePattern,
+    TypeVarTypePattern,
+    callable_t,
+    instance_t,
+    none_t,
+    object_t,
+    parg,
+    type_alias,
+    typevar_t,
+    universal_callable_t,
+)
 from vutils.nox.mypy.transforms import CaptureType
 from vutils.nox.mypy.utils import (
     FIX_DECORATOR_TYPE_FUNC,
     ParamSpecFactory,
     verify_type,
 )
+
+#: Names of type variables
+SUPPORTS_RICH_COMPARISON_TV = "_typeshed.SupportsRichComparisonT"
+
+#: Names of type aliases
+SUPPORTS_RICH_COMPARISON_TA = "_typeshed.SupportsRichComparison"
+
+#: Names of protocols
+SUPPORTS_DUNDER_GT_PROTO = "_typeshed.SupportsDunderGT"
+SUPPORTS_DUNDER_LT_PROTO = "_typeshed.SupportsDunderLT"
+
+#: Names of functions or regular expressions matching them
+BUILTINS_MIN_MAX_RE = re.compile(r"^builtins\.(?:min|max)#(\d+)$")
+
+
+def supports_dunder_lt(
+    action: InstanceAction | None = None
+) -> InstancePattern:
+    """
+    Create a pattern for ``_typeshed.SupportsDunderLT[object]``.
+
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for ``_typeshed.SupportsDunderLT[object]``
+    """
+    return instance_t(SUPPORTS_DUNDER_LT_PROTO, object_t(), action=action)
+
+
+def supports_dunder_gt(
+    action: InstanceAction | None = None
+) -> InstancePattern:
+    """
+    Create a pattern for ``_typeshed.SupportsDunderGT[object]``.
+
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for ``_typeshed.SupportsDunderGT[object]``
+    """
+    return instance_t(SUPPORTS_DUNDER_GT_PROTO, object_t(), action=action)
+
+
+def supports_rich_comparison(
+    action: InstanceAction | None = None
+) -> TypeAliasTypePattern:
+    """
+    Create a pattern for ``_typeshed.SupportsRichComparison``.
+
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for ``_typeshed.SupportsRichComparison``
+    """
+    return type_alias(
+        SUPPORTS_RICH_COMPARISON_TA,
+        supports_dunder_lt(action) | supports_dunder_gt(action),
+    )
+
+
+def supports_rich_comparison_t(
+    action: InstanceAction | None = None
+) -> TypeVarTypePattern:
+    """
+    Create a pattern for ``_typeshed.SupportsRichComparisonT``.
+
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for ``_typeshed.SupportsRichComparisonT``
+    """
+    return typevar_t(
+        SUPPORTS_RICH_COMPARISON_TV, supports_rich_comparison(action)
+    )
+
+
+def min_max_sig_0(action: InstanceAction | None = None) -> CallableTypePattern:
+    """
+    Create a pattern for :func:`min` and :func:`max` signatures.
+
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for :func:`min` and :func:`max` 0th variant signatures
+
+    Create a pattern that matches ``def func(arg1: SupportsRichComparisonT,
+    arg2: SupportsRichComparisonT, /, *_args: SupportsRichComparisonT,
+    key: None = None) -> SupportsRichComparisonT: ...``.
+    """
+    tv = supports_rich_comparison_t(action)
+    arg = Arg(tv)
+    return callable_t(
+        arg, arg, arg, Arg(none_t()), return_type=tv, variables=Seq([tv])
+    )
+
+
+def get_min_max_sig_pattern(
+    sig: CallableType
+) -> Callable[[InstanceAction | None], CallableTypePattern] | None:
+    """
+    """
+    if len(sig.arg_types) == 0:
+        return None
+    arg0_t = sig.arg_types[0]
+    if isinstance(arg0_t, Instance) and len(arg0_t.args) > 0:
+        arg0_t = arg0_t.args[0]
+    namespace = arg0_t.id.namespace if isinstance(arg0_t, TypeVarType) else ""
+    m = BUILTINS_MIN_MAX_RE.match(namespace)
+    if m is None:
+        return None
+    fnum = int(m.group(1))
+    if fnum == 0:
+        return min_max_sig_0
+    return None
+
+
+def adjust_builtins_min_max(ctx: FunctionSigContext) -> FunctionLike:
+    """
+    Adjust signatures of :func:`min` and :func:`max`.
+
+    :param ctx: The function signature context
+    :return: the adjusted function signature
+    :raises TypeError: when the adjusted function signature is not an instance
+        of :class:`mypy.types.CallableType`
+
+    If a function signature contains ``_typeshed.SupportsDunderLT[object]`` or
+    ``_typeshed.SupportsDunderGT[object]`` then replace ``object`` with the
+    type deduced from the first passed positional argument. If that argument is
+    iterable, use the underlying type (the type of iterable's elements).
+    """
+    args = ctx.args
+    sig = ctx.default_signature
+    api = ctx.api
+    if len(args) == 0 or len(args[0]) == 0:
+        return sig
+    tt = get_proper_type(api.get_expression_type(args[0][0]))
+    # Covers also the `Generator[T, None, None]` case
+    if isinstance(tt, Instance) and is_subtype_of(tt.type, ITERABLE_TYPE):
+        tt = get_proper_type(tt.args[0])
+    sig_tf = get_min_max_sig_pattern(sig)
+    if sig_tf is None:
+        return sig
+    result = sig_tf(Replace(tt)).try_match(sig)
+    if isinstance(result, TypeError):
+        return sig
+    return verify_type(result, CallableType)
 
 
 def adjust_universal_callable_in_decorator(ctx: FunctionContext) -> Type:
