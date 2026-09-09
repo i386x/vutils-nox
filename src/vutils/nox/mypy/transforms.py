@@ -8,7 +8,9 @@
 #
 """Type transformers."""
 
-from mypy.types import Type
+from collections.abc import Sequence
+
+from mypy.types import Instance, LiteralType, Type
 
 
 class CaptureType[T: Type, *Ts]:
@@ -48,3 +50,62 @@ class CaptureType[T: Type, *Ts]:
         """
         self.__type = t
         return t
+
+
+class ModifyInstance:
+    """The action for modifying :class:`mypy.types.Instance` types."""
+
+    #: The new instance type arguments
+    args: Sequence[Type] | None
+    #: The new *last known value*
+    last_known_value: LiteralType | None
+
+    __slots__ = ("args", "last_known_value")
+
+    def __init__(
+        self,
+        args: Sequence[Type] | None = None,
+        last_known_value: LiteralType | None = None,
+    ) -> None:
+        """
+        Initialize the action.
+
+        :param args: The new instance type arguments
+        :param last_known_value: The new *last known value*
+
+        When invoked, the action replaces the arguments and the *last known
+        value* of the passed instance type with :xarg:`args` and
+        :xarg:`last_known_value`, respectively. If a new provided value is
+        :obj:`None`, the old value is used.
+        """
+        self.args = args
+        self.last_known_value = last_known_value
+
+    def __call__(
+        self,
+        t: Instance,
+        args: Sequence[Type],
+        last_known_value: LiteralType | None,
+    ) -> Type:
+        """
+        Modify :xarg:`t` when necessary.
+
+        :param t: The instance type
+        :param args: The instance type arguments
+        :param last_known_value: The instance type *last known value*
+        :return: :xarg:`t` or modified :xarg:`t`
+        """
+        if self.args is None and self.last_known_value is None:
+            return t
+        return Instance(
+            typ=t.type,
+            args=args if self.args is None else self.args,
+            line=t.line,
+            column=t.column,
+            last_known_value=(
+                last_known_value
+                if self.last_known_value is None
+                else self.last_known_value
+            ),
+            extra_attrs=t.extra_attrs,
+        )

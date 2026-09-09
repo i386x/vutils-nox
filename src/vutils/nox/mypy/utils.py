@@ -11,10 +11,14 @@
 from collections.abc import Iterable, MutableMapping, MutableSequence, Sequence
 
 from mypy.checker import TypeChecker
+from mypy.nodes import TypeInfo
+from mypy.plugin import AnalyzeTypeContext
+from mypy.typeanal import TypeAnalyser
 from mypy.types import (
     AnyType,
     ParamSpecFlavor,
     ParamSpecType,
+    Type,
     TypeOfAny,
     TypeVarId,
     TypeVarLikeType,
@@ -24,7 +28,13 @@ from mypy.types import (
 FIX_DECORATOR_TYPE_FUNC = "vutils.nox.mypy.typing.fix_decorator_type"
 
 #: Names of some important types
+ANY_TYPE = "typing.Any"
+BYTES_TYPE = "builtins.bytes"
+CALLABLE_TYPE = "typing.Callable"
 DICT_TYPE = "builtins.dict"
+FUNCTION_TYPE = "builtins.function"
+ITERABLE_TYPE = "typing.Iterable"
+LIST_TYPE = "builtins.list"
 OBJECT_TYPE = "builtins.object"
 STR_TYPE = "builtins.str"
 TUPLE_TYPE = "builtins.tuple"
@@ -42,6 +52,20 @@ def verify_type[T](obj: object, typ: type[T]) -> T:
     if not isinstance(obj, typ):
         raise TypeError(f"Expected an instance of {typ!r}")
     return obj
+
+
+def new_object(ctx: AnalyzeTypeContext) -> Type:
+    """
+    Make an :class:`object` type based on the context.
+
+    :param ctx: The type analyzer context
+    :return: the :class:`object` type
+    :raises TypeError: when :xarg:`ctx.api` is not an instance of
+        :class:`mypy.typeanal.TypeAnalyser`
+    """
+    t = ctx.type
+    api = verify_type(ctx.api, TypeAnalyser)
+    return api.named_type(OBJECT_TYPE, line=t.line, column=t.column)
 
 
 def new_typevar_id(
@@ -211,3 +235,16 @@ class ParamSpecFactory:
         pspec = ParamSpec(ps_bare, ps_args, ps_kwargs)
         self.__storage[name] = pspec
         return pspec
+
+
+def is_subtype_of(t: TypeInfo, fullname: str) -> bool:
+    """
+    Test whether :xarg:`fullname` is a subtype of :xarg:`t`.
+
+    :param t: The type
+    :param fullname: The full name of a subtype
+    :return: :obj:`True` if :xarg:`fullname` is a subtype of :xarg:`t`
+
+    The test is based on the MRO of :xarg:`t`.
+    """
+    return fullname in set(tt.fullname for tt in t.mro)

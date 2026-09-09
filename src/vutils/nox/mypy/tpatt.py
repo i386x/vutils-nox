@@ -24,7 +24,12 @@ from mypy.types import (
     UnionType,
 )
 
-from vutils.nox.mypy.utils import OBJECT_TYPE, verify_type
+from vutils.nox.mypy.utils import (
+    LIST_TYPE,
+    OBJECT_TYPE,
+    TUPLE_TYPE,
+    verify_type,
+)
 
 #: Type aliases
 type InstanceAction = Callable[
@@ -88,6 +93,19 @@ class Pattern[T: Type | Sequence[Type]]:
         Match :xarg:`t` and invoke the user-defined action when provided.
         """
         raise NotImplementedError
+
+    def try_match(self, t: T) -> T | TypeMatchError:
+        """
+        Try to match a type or a sequence of types.
+
+        :param t: The type or the sequence of types
+        :return: the result returned by :meth:`~.Pattern.match` or an instance
+            of :exc:`.TypeMatchError` on an unsuccessful match
+        """
+        try:
+            return self.match(t)
+        except TypeMatchError as e:
+            return e
 
     def test(self, t: T) -> bool:
         """
@@ -752,6 +770,34 @@ def object_t(action: InstanceAction | None = None) -> InstancePattern:
     :return: the pattern for :class:`object`
     """
     return instance_t(OBJECT_TYPE, action=action)
+
+
+@functools.cache
+def tuple_t(
+    *args: Pattern[Type], action: InstanceAction | None = None
+) -> InstancePattern:
+    """
+    Create a pattern for :class:`tuple`.
+
+    :param args: Patterns for a :class:`tuple` type arguments
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for :class:`tuple`
+    """
+    return instance_t(TUPLE_TYPE, *args, action=action)
+
+
+@functools.cache
+def list_t(
+    *args: Pattern[Type], action: InstanceAction | None = None
+) -> InstancePattern:
+    """
+    Create a pattern for :class:`list`.
+
+    :param args: Patterns for a :class:`list` type arguments
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for :class:`list`
+    """
+    return instance_t(LIST_TYPE, *args, action=action)
 
 
 @functools.cache
