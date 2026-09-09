@@ -1020,19 +1020,6 @@ class TypeTransformer(TypeTranslator):
         )
 
 
-def is_subtype_of(t: TypeInfo, fullname: str) -> bool:
-    """
-    Test whether :xarg:`fullname` is a subtype of :xarg:`t`.
-
-    :param t: The type
-    :param fullname: The subtype's full name
-    :return: :obj:`True` if :xarg:`fullname` is a subtype of :xarg:`t`
-
-    The test is based on the MRO of :xarg:`t`.
-    """
-    return fullname in set(tt.fullname for tt in t.mro)
-
-
 def can_accept_anything(t: CallableType) -> bool:
     """
     Test whether callable can accept arbitrary arguments.
@@ -1214,20 +1201,6 @@ class FixSupportsComparison(TypeTranslator):
             t.line,
             t.column,
         )
-
-
-def make_object(ctx: AnalyzeTypeContext) -> Type:
-    """
-    Make an :class:`object` type based on the context.
-
-    :param ctx: The type analyzer context
-    :return: the :class:`object` type
-    :raises TypeError: when :xarg:`ctx.api` is not an instance of
-        :class:`mypy.typeanal.TypeAnalyser`
-    """
-    t = ctx.type
-    api = verify_type(ctx.api, TypeAnalyser)
-    return api.named_type(OBJECT_TYPE, line=t.line, column=t.column)
 
 
 def make_universal_callable(
