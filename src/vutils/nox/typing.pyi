@@ -9,6 +9,7 @@
 
 from collections.abc import Callable, Iterable, MutableMapping, Sequence
 from os import PathLike
+from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, TypedDict
 
 from nox._typing import Python
@@ -64,7 +65,7 @@ class CommandPropsBase(CommandOptions, total=False):
     description: str
     envname: str
     package: str
-    cachedir: PathLike[str]
+    cachedir: Path
     config: str
 
 class CommandProps(CommonArgs, CommandPropsBase, total=False): ...
