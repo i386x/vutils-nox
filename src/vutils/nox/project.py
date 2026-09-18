@@ -27,10 +27,10 @@ from pydantic import (
 )
 from pyproject_metadata import StandardMetadata
 
+from vutils.nox.mypy.typing import fix_decorator_type
 from vutils.nox.utils import (
     EV_PYTHONPATH,
     IMPORT_ERROR_RE,
-    fix_decorator_type,
     resolve_path,
     run_script,
     setenv,
@@ -235,7 +235,7 @@ def load_pyproject(path: pathlib.Path | None = None) -> PyProject:
     If :xarg:`path` is :obj:`None`, ``pyproject.toml`` is looked for in the
     current working directory. If :xarg:`path` is a directory,
     ``pyproject.toml`` is looked for in that directory. Otherwise, :xarg:`path`
-    should point to a TOML file with a content satisfying the
+    should point to a valid TOML file with a content satisfying the
     ``pyproject.toml`` content specification.
     """
     if path is None:
@@ -338,7 +338,7 @@ def get_dynamic(pyproject: PyProject, field: str) -> tuple[str, str] | None:
     dynamic = setuptools.dynamic
     if dynamic is None:
         return None
-    data: Mapping[str, str] | None = {
+    data = {
         VERSION_KEY: dynamic.version,
     }.get(field)
     if data is None:
@@ -354,7 +354,7 @@ def get_where(pyproject: PyProject) -> Iterable[str] | None:
     :param pyproject: The ``pyproject.toml`` data
     :return: the list of directories, relative to the ``pyproject.toml``-like
         file directory, where to look for packages to be distributed or
-        :obj:`None` if no such list is specified
+        :obj:`None` if no such list is specified in the ``pyproject.toml`` data
     """
     tool = pyproject.tool
     if tool is None:

@@ -8,6 +8,10 @@
 #
 """Typing helpers."""
 
+import os
+
+type StrPath = str | os.PathLike[str]
+
 
 def fix_decorator_type[F](func: F) -> F:
     """

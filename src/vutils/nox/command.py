@@ -10,15 +10,17 @@
 
 import contextlib
 import functools
+import inspect
 import optparse
-import os
+import pathlib
 from collections.abc import Callable, Iterable, MutableMapping, MutableSequence
 from typing import (
-    TYPE_CHECKING,
     ClassVar,
     Generator,
     Literal,
-    TypeGuard,
+    Never,
+    TypedDict,
+    TypeIs,
     Unpack,
     overload,
 )
@@ -28,6 +30,7 @@ from nox.registry import get
 from nox.sessions import Session
 from setuptools import find_namespace_packages, find_packages
 
+from vutils.nox.mypy.typing import fix_decorator_type
 from vutils.nox.pkgspec import InstallMode
 from vutils.nox.project import get_where, load_pyproject
 from vutils.nox.state import (
@@ -35,21 +38,26 @@ from vutils.nox.state import (
     KW_DEPS,
     CommandState,
     Configuration,
+    ConfType,
     Dependencies,
+    DepsType,
 )
 from vutils.nox.utils import identical
 
-if TYPE_CHECKING:
-    from vutils.nox.typing import (
-        ActionType,
-        CommandArgs,
-        CommandDefs,
-        CommandOptions,
-        CommandProps,
-        ConfType,
-        DepsType,
-        StrPath,
-    )
+#: Type aliases
+type ActionType = Callable[[Session, bool], None] | Callable[[Session], None]
+type CommonArgsKey = Literal["name"]
+type CommandArgsOnlyKey = Literal[
+    "install_mode",
+    "description",
+    "envname",
+    "package",
+    "cachedir",
+    "config",
+    "actions",
+    "statefile",
+]
+type CommandArgsKey = CommonArgsKey | CommandArgsOnlyKey
 
 #: Parameters, keys, and properties
 KW_ACTIONS: Literal["actions"] = "actions"
@@ -63,7 +71,7 @@ KW_PACKAGE: Literal["package"] = "package"
 KW_STATEFILE: Literal["statefile"] = "statefile"
 
 
-def is_action_callable(action: "ActionType | str") -> TypeGuard["ActionType"]:
+def is_action_callable(action: ActionType | str) -> TypeIs[ActionType]:
     """
     Check whether the action is callable.
 
@@ -73,9 +81,23 @@ def is_action_callable(action: "ActionType | str") -> TypeGuard["ActionType"]:
     return callable(action)
 
 
+def is_simple_action(action: ActionType) -> TypeIs[Callable[[Session], None]]:
+    """
+    Check whether the action is *simple*.
+
+    :param action: The action
+    :return: :obj:`True` if the action is a *simple* action, that is, if it
+        accepts only a session and have no additional parameters
+
+    This type guard help to decide whether to pass additional information to
+    the action.
+    """
+    return len(inspect.signature(action).parameters) == 1
+
+
 def normalize_actions(
-    actions: Iterable["ActionType | str"],
-) -> Generator["ActionType", None, None]:
+    actions: Iterable[ActionType | str],
+) -> Generator[ActionType, None, None]:
     """
     Normalize actions.
 
@@ -96,7 +118,7 @@ def normalize_actions(
             yield action
         if action not in registry:
             raise KeyError(f"`{action}` is not in Nox registry")
-        command = registry[action]
+        command: object = registry[action]
         if isinstance(command, Func):
             command = command.func
         if not isinstance(command, Command):
@@ -115,8 +137,8 @@ def normalize_description(desc: str) -> str:
 
     #. select the first line
     #. make the first letter lowercase
-    #. if the description ends with the dot is neither the part of ellipsis nor
-       the entire description is the dot
+    #. if the description ends with the dot and the dot is neither the part of
+       the ellipsis nor the entire description is the dot, then
 
        - remove the dot
     """
@@ -128,7 +150,7 @@ def normalize_description(desc: str) -> str:
     return desc
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def find_package() -> str | None:
     """
     Find an importable package in the project directory.
@@ -142,11 +164,41 @@ def find_package() -> str | None:
     if not where:
         return None
     packages = find_packages(where=where[-1])
+    pkgidx = 0
     if not packages:
         packages = find_namespace_packages(where=where[-1])
+        pkgidx = 1
     if not packages:
         return None
-    return packages[-1]
+    if pkgidx >= len(packages):
+        pkgidx = -1
+    return packages[pkgidx]
+
+
+class CommonArgs(TypedDict, total=False):
+    """Common arguments."""
+
+    name: str
+
+
+class CommandOptions(TypedDict, total=False):
+    """Command options."""
+
+    install_mode: InstallMode
+
+
+class CommandPropsBase(CommandOptions, total=False):
+    """Command properties base."""
+
+    description: str
+    envname: str
+    package: str
+    cachedir: pathlib.Path
+    config: str | None
+
+
+class CommandProps(CommonArgs, CommandPropsBase, total=False):
+    """Command properties."""
 
 
 class CommandOptsParser(optparse.OptionParser):
@@ -154,15 +206,13 @@ class CommandOptsParser(optparse.OptionParser):
 
     __slots__ = ()
 
-    def __init__(self, command: "Command") -> None:
+    def __init__(self, command: Command) -> None:
         """
         Initialize the parser.
 
         :param command: The command owning this parser
         """
-        optparse.OptionParser.__init__(
-            self, prog=command.name, description=command.description
-        )
+        super().__init__(prog=command.name, description=command.description)
         self.set_defaults(**{KW_INSTALL_MODE: None})
         self.add_option(
             "-U",
@@ -188,15 +238,15 @@ class CommandOptsParser(optparse.OptionParser):
             help="do not install dependencies if they are already installed",
         )
 
-    def process_args(
-        self, container: "CommandProps", args: MutableSequence[str]
-    ) -> None:
+    def process_args(self, container: CommandProps, args: list[str]) -> None:
         """
         Parse, process, and store arguments.
 
         :param container: The container to which parsed and processed arguments
             are going to be stored
-        :param args: Arguments to be parsed and processed
+        :param args: The arguments to be parsed and processed
+        :raises TypeError: when the parsed arguments do not agree with their
+            expected types
 
         After arguments are parsed, remove ``--upgrade`` and ``--force`` from
         :xarg:`args`, since all dependencies from subcommands are installed at
@@ -207,14 +257,17 @@ class CommandOptsParser(optparse.OptionParser):
         opts, rest = self.parse_args(args)
         del args[: len(args) - len(rest)]
         mode = getattr(opts, KW_INSTALL_MODE, None)
+        if mode is None:
+            return
+        if not isinstance(mode, InstallMode):
+            raise TypeError(f"Bad type of `install_mode` ({type(mode)!r})")
         if mode == InstallMode.NOINSTALL:
             if args:
                 args.insert(0, "--")
             args.insert(0, "--noinstall")
-        if mode is not None:
-            container[KW_INSTALL_MODE] = mode
+        container[KW_INSTALL_MODE] = mode
 
-    def error(self, msg: str) -> None:
+    def error(self, msg: str) -> Never:
         """
         Issue an error.
 
@@ -222,6 +275,24 @@ class CommandOptsParser(optparse.OptionParser):
         :raises optparse.OptParseError: with :xarg:`msg` when invoked
         """
         raise optparse.OptParseError(f"{self.get_prog_name()}: {msg}")
+
+
+class CommandArgsBase(CommandPropsBase, total=False):
+    """Command arguments base."""
+
+    actions: Iterable[ActionType | str]
+    statefile: str
+
+
+class CommandArgs(CommonArgs, CommandArgsBase, total=False):
+    """Command arguments."""
+
+
+class CommandDefs(TypedDict):
+    """Command definitions."""
+
+    deps: DepsType
+    conf: ConfType
 
 
 class Command:
@@ -243,16 +314,16 @@ class Command:
     """
 
     #: Command definitions (dependencies and configuration)
-    DEFS: ClassVar["CommandDefs"] = {KW_DEPS: {}, KW_CONF: {}}
+    DEFS: ClassVar[CommandDefs] = {KW_DEPS: {}, KW_CONF: {}}
 
     #: Actions to be executed when the command runs
-    __actions: MutableSequence["ActionType"]
+    __actions: MutableSequence[ActionType]
     #: The command dependencies container
     __dependencies: Dependencies
     #: The command configuration container
     __configuration: Configuration
     #: The command properties
-    __properties: "CommandProps"
+    __properties: CommandProps
     #: The option parser
     __parser: CommandOptsParser
     #: The command state
@@ -267,7 +338,7 @@ class Command:
         "__state",
     )
 
-    def __collect_actions(self, kwargs: "CommandArgs") -> None:
+    def __collect_actions(self, kwargs: CommandArgs) -> None:
         """
         Collect actions from :xarg:`kwargs`.
 
@@ -280,14 +351,16 @@ class Command:
 
     @overload
     @classmethod
-    def __collect_defs(cls, kind: Literal["deps"]) -> "DepsType": ...
+    def __collect_defs(cls, kind: Literal["deps"]) -> DepsType: ...
 
     @overload
     @classmethod
-    def __collect_defs(cls, kind: Literal["conf"]) -> "ConfType": ...
+    def __collect_defs(cls, kind: Literal["conf"]) -> ConfType: ...
 
     @classmethod
-    def __collect_defs(cls, kind: str) -> "DepsType | ConfType":
+    def __collect_defs(
+        cls, kind: Literal["deps", "conf"]
+    ) -> DepsType | ConfType:
         """
         Collect a definition based on :xarg:`kind`.
 
@@ -332,11 +405,13 @@ class Command:
             self.__configuration.add(key, value)
         self.__configuration.commit()
 
-    def __collect_properties(self, props: "CommandProps") -> None:
+    def __collect_properties(self, props: CommandProps) -> None:
         """
         Collect properties from :xarg:`props`.
 
-        :param props: Properties
+        :param props: The command properties
+        :raises TypeError: when ``Command.__name__`` has other type than
+            :class:`str` (should never happen)
         """
         if len(self.__actions) == 1 and not identical(
             self.__actions[0], self.run
@@ -348,10 +423,15 @@ class Command:
                 else self.__actions[0].__doc__
             )
         else:
-            name = type(self).__name__.lower()
+            # Mypy claims the type is `Callable[[Command], str]` instead of
+            # `str` so we need to narrow it
+            name_obj: object = type(self).__name__
+            if not isinstance(name_obj, str):
+                raise TypeError("`Command.__name__` is not string")
+            name = name_obj.lower()
             desc = type(self).__doc__
         props.setdefault(KW_NAME, name)
-        props.setdefault(KW_DESCRIPTION, desc)
+        props.setdefault(KW_DESCRIPTION, desc or "<no description>")
         props[KW_DESCRIPTION] = normalize_description(props[KW_DESCRIPTION])
         props.setdefault(KW_ENVNAME, name)
         package = find_package()
@@ -381,7 +461,7 @@ class Command:
 
         self.traverse(callback)
 
-    def __init__(self, **kwargs: Unpack["CommandArgs"]) -> None:
+    def __init__(self, **kwargs: Unpack[CommandArgs]) -> None:
         """
         Initialize the command.
 
@@ -405,11 +485,13 @@ class Command:
           :meth:`.Command.run`, the description is read from the ``__doc__``
           (or ``description`` if the action is a :class:`.Command` instance)
           property of this action; otherwise, the description is read from the
-          ``__doc__`` property of this command; if the description is
-          multi-line, the first line is taken; the first letter is lowercased
-          and the sole last dot, if present, is removed from the description
+          ``__doc__`` property of this command; finally, when there is no
+          ``__doc__``, the fallback description is ``"<no description>"``; if
+          the description is multi-line, the first line is taken; the first
+          letter is lowercased and the sole last dot, if present, is removed
+          from the description
         * ``envname``, specifying the name of the Python virtual environment;
-          if not given it is same as ``name``
+          if not given it is the same as ``name``
         * ``package``, specifying the importable name of the Python package,
           produced via ``python -m build`` and installed via ``pip install -e
           .`` or ``pip install <wheel produced during the build>``, which
@@ -448,7 +530,7 @@ class Command:
         )
 
     def traverse(
-        self, callback: Callable[["Command"], None], shallow: bool = False
+        self, callback: Callable[[Command], None], shallow: bool = False
     ) -> None:
         """
         Traverse subcommands in the first order manner.
@@ -534,7 +616,7 @@ class Command:
         return self.__properties[KW_PACKAGE]
 
     @property
-    def cachedir(self) -> os.PathLike[str]:
+    def cachedir(self) -> pathlib.Path:
         """
         Get the shared cache directory.
 
@@ -542,15 +624,14 @@ class Command:
         :raises KeyError: when this property has been read too early
         """
         if KW_CACHEDIR not in self.__properties:
-            detail = (
+            raise KeyError(
                 f"{self.name}: `chachedir` property has not been set yet"
                 " (probably accessed before the command has been invoked)"
             )
-            raise KeyError(detail)
         return self.__properties[KW_CACHEDIR]
 
     @property
-    def opts(self) -> "CommandOptions":
+    def opts(self) -> CommandOptions:
         """
         Get the command options.
 
@@ -586,12 +667,19 @@ class Command:
             else self.__configuration.checksum()
         )
 
-    def config(self, fname: str | None = None) -> "StrPath | None":
+    def config(self, fname: str | None = None) -> pathlib.Path | str | None:
         """
         Prepare and get the configuration file for this command.
 
         :param fname: The name of the requested configuration file
-        :return: the path to the requested configuration file
+        :return: the path to the requested configuration file or the name of
+            the configuration file or :obj:`None`
+
+        When invoked with :obj:`None`, return the name of the configuration
+        file or :obj:`None` if there is no configuration file associated with
+        this command. When invoked with the name of the configuration file,
+        remember the name and return the path to it. If the configuration file
+        does not exist, it is created.
         """
         if fname is None:
             return self.__properties[KW_CONFIG]
@@ -661,7 +749,7 @@ class Command:
 
         Note that dependencies are not installed if this command is a
         subcommand of some other command, since all dependencies were gathered
-        and installed on the top of the command tree.
+        and installed on the top of the command hierarchy.
         """
         with self.context(session, is_subcommand):
             if not is_subcommand:
@@ -670,4 +758,7 @@ class Command:
                 )
 
             for action in self.__actions:
-                action(session, True)
+                if is_simple_action(action):
+                    action(session)
+                else:
+                    action(session, True)

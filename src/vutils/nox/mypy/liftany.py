@@ -19,6 +19,7 @@ from mypy.plugin import (
     AnalyzeTypeContext,
     FunctionContext,
     FunctionSigContext,
+    MethodSigContext,
     Plugin,
 )
 from mypy.typeanal import TypeAnalyser
@@ -38,12 +39,13 @@ from mypy.types import (
 from vutils.nox.mypy.tpatt import (
     Arg,
     CallableTypePattern,
-    InstanceAction,
     InstancePattern,
+    OnInstance,
     Seq,
     TypeAliasTypePattern,
     TypeMatchError,
     TypeVarTypePattern,
+    bool_t,
     callable_t,
     instance_t,
     list_t,
@@ -56,12 +58,15 @@ from vutils.nox.mypy.tpatt import (
     universal_callable_t,
 )
 from vutils.nox.mypy.transforms import CaptureType, ModifyInstance
+from vutils.nox.mypy.typing import fix_decorator_type
 from vutils.nox.mypy.utils import (
     ANY_TYPE,
     BYTES_TYPE,
     CALLABLE_TYPE,
     FIX_DECORATOR_TYPE_FUNC,
+    FUNCTION_TYPE,
     ITERABLE_TYPE,
+    MUTABLE_SEQUENCE_TYPE,
     OBJECT_TYPE,
     STR_TYPE,
     ParamSpecFactory,
@@ -83,11 +88,13 @@ SUPPORTS_RICH_COMPARISON_TA = "_typeshed.SupportsRichComparison"
 SUPPORTS_DUNDER_GT_PROTO = "_typeshed.SupportsDunderGT"
 SUPPORTS_DUNDER_LT_PROTO = "_typeshed.SupportsDunderLT"
 
-#: Names of functions or regular expressions matching them
+#: Names of functions/methods or regular expressions matching them
+BUILTINS_LIST_SORT = "builtins.list.sort"
 BUILTINS_MAX = "builtins.max"
 BUILTINS_MIN = "builtins.min"
 BUILTINS_MIN_MAX_RE = re.compile(r"^builtins\.(?:min|max)(#\d+)?$")
 EMAIL_HEADER_DECODE_HEADER = "email.header.decode_header"
+RANDOM_SHUFFLE = "random.shuffle"
 
 
 def make_universal_callable(
@@ -154,9 +161,9 @@ def handle_unspecified_parameters_in_callable(ctx: AnalyzeTypeContext) -> Type:
     return api.analyze_callable_type(t)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def supports_dunder_lt(
-    action: InstanceAction | None = None
+    action: OnInstance | None = None,
 ) -> InstancePattern:
     """
     Create a pattern for ``_typeshed.SupportsDunderLT[object]``.
@@ -167,9 +174,9 @@ def supports_dunder_lt(
     return instance_t(SUPPORTS_DUNDER_LT_PROTO, object_t(), action=action)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def supports_dunder_gt(
-    action: InstanceAction | None = None
+    action: OnInstance | None = None,
 ) -> InstancePattern:
     """
     Create a pattern for ``_typeshed.SupportsDunderGT[object]``.
@@ -180,9 +187,9 @@ def supports_dunder_gt(
     return instance_t(SUPPORTS_DUNDER_GT_PROTO, object_t(), action=action)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def supports_rich_comparison(
-    action: InstanceAction | None = None
+    action: OnInstance | None = None,
 ) -> TypeAliasTypePattern:
     """
     Create a pattern for ``_typeshed.SupportsRichComparison``.
@@ -196,9 +203,9 @@ def supports_rich_comparison(
     )
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def supports_rich_comparison_t(
-    action: InstanceAction | None = None
+    action: OnInstance | None = None,
 ) -> TypeVarTypePattern:
     """
     Create a pattern for ``_typeshed.SupportsRichComparisonT``.
@@ -211,7 +218,7 @@ def supports_rich_comparison_t(
     )
 
 
-def min_max_sig_0(action: InstanceAction | None = None) -> CallableTypePattern:
+def min_max_sig_0(action: OnInstance | None = None) -> CallableTypePattern:
     """
     Create a pattern for :func:`min` and :func:`max` signatures.
 
@@ -223,13 +230,13 @@ def min_max_sig_0(action: InstanceAction | None = None) -> CallableTypePattern:
     key: None = None) -> SupportsRichComparisonT: ...``.
     """
     tv = supports_rich_comparison_t(action)
-    arg = Arg(tv)
+    arg = Arg(typ=tv)
     return callable_t(
-        arg, arg, arg, Arg(none_t()), ret_type=tv, variables=Seq([tv])
+        arg, arg, arg, Arg(typ=none_t()), ret_type=tv, variables=Seq([tv])
     )
 
 
-def min_max_sig_1(action: InstanceAction | None = None) -> CallableTypePattern:
+def min_max_sig_1(action: OnInstance | None = None) -> CallableTypePattern:
     """
     Create a pattern for :func:`min` and :func:`max` signatures.
 
@@ -241,18 +248,18 @@ def min_max_sig_1(action: InstanceAction | None = None) -> CallableTypePattern:
     """
     tv = typevar_t(BUILTINS_T_TV, object_t())
     ta = supports_rich_comparison(action)
-    arg = Arg(tv)
+    arg = Arg(typ=tv)
     return callable_t(
         arg,
         arg,
         arg,
-        Arg(callable_t(arg, ret_type=ta)),
+        Arg(typ=callable_t(arg, ret_type=ta)),
         ret_type=tv,
         variables=Seq([tv]),
     )
 
 
-def min_max_sig_2(action: InstanceAction | None = None) -> CallableTypePattern:
+def min_max_sig_2(action: OnInstance | None = None) -> CallableTypePattern:
     """
     Create a pattern for :func:`min` and :func:`max` signatures.
 
@@ -265,14 +272,14 @@ def min_max_sig_2(action: InstanceAction | None = None) -> CallableTypePattern:
     """
     tv = supports_rich_comparison_t(action)
     return callable_t(
-        Arg(instance_t(ITERABLE_TYPE, tv)),
-        Arg(none_t()),
+        Arg(typ=instance_t(ITERABLE_TYPE, tv)),
+        Arg(typ=none_t()),
         ret_type=tv,
         variables=Seq([tv]),
     )
 
 
-def min_max_sig_3(action: InstanceAction | None = None) -> CallableTypePattern:
+def min_max_sig_3(action: OnInstance | None = None) -> CallableTypePattern:
     """
     Create a pattern for :func:`min` and :func:`max` signatures.
 
@@ -284,14 +291,18 @@ def min_max_sig_3(action: InstanceAction | None = None) -> CallableTypePattern:
     """
     tv = typevar_t(BUILTINS_T_TV, object_t())
     return callable_t(
-        Arg(instance_t(ITERABLE_TYPE, tv)),
-        Arg(callable_t(Arg(tv), ret_type=supports_rich_comparison(action))),
+        Arg(typ=instance_t(ITERABLE_TYPE, tv)),
+        Arg(
+            typ=callable_t(
+                Arg(typ=tv), ret_type=supports_rich_comparison(action)
+            )
+        ),
         ret_type=tv,
         variables=Seq([tv]),
     )
 
 
-def min_max_sig_4(action: InstanceAction | None = None) -> CallableTypePattern:
+def min_max_sig_4(action: OnInstance | None = None) -> CallableTypePattern:
     """
     Create a pattern for :func:`min` and :func:`max` signatures.
 
@@ -305,15 +316,15 @@ def min_max_sig_4(action: InstanceAction | None = None) -> CallableTypePattern:
     tv1 = supports_rich_comparison_t(action)
     tv2 = typevar_t(BUILTINS_T_TV, object_t())
     return callable_t(
-        Arg(instance_t(ITERABLE_TYPE, tv1)),
-        Arg(none_t()),
-        Arg(tv2),
+        Arg(typ=instance_t(ITERABLE_TYPE, tv1)),
+        Arg(typ=none_t()),
+        Arg(typ=tv2),
         ret_type=tv1 | tv2,
         variables=Seq([tv1, tv2]),
     )
 
 
-def min_max_sig_5(action: InstanceAction | None = None) -> CallableTypePattern:
+def min_max_sig_5(action: OnInstance | None = None) -> CallableTypePattern:
     """
     Create a pattern for :func:`min` and :func:`max` signatures.
 
@@ -327,17 +338,21 @@ def min_max_sig_5(action: InstanceAction | None = None) -> CallableTypePattern:
     tv1 = typevar_t(BUILTINS_T1_TV, object_t())
     tv2 = typevar_t(BUILTINS_T2_TV, object_t())
     return callable_t(
-        Arg(instance_t(ITERABLE_TYPE, tv1)),
-        Arg(callable_t(tv1, ret_type=supports_rich_comparison(action))),
-        Arg(tv2),
+        Arg(typ=instance_t(ITERABLE_TYPE, tv1)),
+        Arg(
+            typ=callable_t(
+                Arg(typ=tv1), ret_type=supports_rich_comparison(action)
+            )
+        ),
+        Arg(typ=tv2),
         ret_type=tv1 | tv2,
         variables=Seq([tv1, tv2]),
     )
 
 
 def get_min_max_sig_pattern_factory(
-    sig: CallableType
-) -> Callable[[InstanceAction | None], CallableTypePattern] | None:
+    sig: CallableType,
+) -> Callable[[OnInstance | None], CallableTypePattern] | None:
     """
     Get the right type pattern factory for :func:`min` and :func:`max`.
 
@@ -345,6 +360,8 @@ def get_min_max_sig_pattern_factory(
     :return: the type pattern factory that creates a pattern for matching the
         :func:`min` or :func:`max` signature or :obj:`None` if there is no such
         a factory
+    :raises TypeError: when the deduced name of the type pattern factory has an
+        incorrect type (this is probably a bug)
     """
     if len(sig.arg_types) == 0:
         return None
@@ -353,6 +370,8 @@ def get_min_max_sig_pattern_factory(
         arg0_t = arg0_t.args[0]
     namespace = arg0_t.id.namespace if isinstance(arg0_t, TypeVarType) else ""
     m = BUILTINS_MIN_MAX_RE.match(namespace)
+    if m is None:
+        return None
     return {
         "#0": min_max_sig_0,
         "#1": min_max_sig_1,
@@ -360,7 +379,7 @@ def get_min_max_sig_pattern_factory(
         "#3": min_max_sig_3,
         "#4": min_max_sig_4,
         "##": min_max_sig_5,
-    }.get(m and (m.group(1) or "##"))
+    }.get(verify_type(m.group(1) or "##", str))
 
 
 def adjust_builtins_min_max(ctx: FunctionSigContext) -> FunctionLike:
@@ -390,6 +409,42 @@ def adjust_builtins_min_max(ctx: FunctionSigContext) -> FunctionLike:
     if sig_pf is None:
         return sig
     result = sig_pf(ModifyInstance([tt])).try_match(sig)
+    if isinstance(result, TypeMatchError):
+        return sig
+    return verify_type(result, CallableType)
+
+
+def adjust_random_shuffle(ctx: FunctionSigContext) -> FunctionLike:
+    """
+    Adjust the signature of :func:`random.shuffle`.
+
+    :param ctx: The function signature context
+    :return: the adjusted function signature
+    :raises TypeError: when the adjusted function signature is not an instance
+        of :class:`mypy.types.CallableType`
+
+    In ``def shuffle(self, x: MutableSequence[Any]) -> None: ...``, replace
+    ``Any``, previously replaced by ``object``, with ``T`` from
+    ``MutableSequence[T]`` that has been passed to :func:`random.shuffle` as
+    its argument.
+    """
+    args = ctx.args
+    sig = ctx.default_signature
+    api = ctx.api
+    if len(args) == 0 or len(args[0]) == 0:
+        return sig
+    tt = get_proper_type(api.get_expression_type(args[0][0]))
+    if not isinstance(tt, Instance) or len(tt.args) == 0:
+        return sig
+    tt = get_proper_type(tt.args[0])
+    result = callable_t(
+        Arg(
+            typ=instance_t(
+                MUTABLE_SEQUENCE_TYPE, object_t(), action=ModifyInstance([tt])
+            )
+        ),
+        ret_type=none_t(),
+    ).try_match(sig)
     if isinstance(result, TypeMatchError):
         return sig
     return verify_type(result, CallableType)
@@ -517,6 +572,46 @@ def adjust_return_email_header_decode_header(ctx: FunctionContext) -> Type:
     return result
 
 
+def adjust_builtins_list_sort(ctx: MethodSigContext) -> FunctionLike:
+    """
+    Adjust a signature of :meth:`list.sort`.
+
+    :param ctx: The method signature context
+    :return: the adjusted method signature
+    :raises TypeError: when the adjusted method signature is not an instance of
+        :class:`mypy.types.CallableType`
+
+    If the :meth:`list.sort` signature is ``def list.sort(self, *, key:
+    Callable[[_T], SupportsRichComparison], reverse: bool = False) -> None:
+    ...``, replace ``object`` in ``_typeshed.SupportsDunderLT[object]`` and in
+    ``_typeshed.SupportsDunderGT[object]`` with the return type of the key
+    function passed as an argument to :meth:`list.sort`.
+    """
+    args = ctx.args
+    sig = ctx.default_signature
+    api = ctx.api
+    if len(args) == 0 or len(args[0]) == 0:
+        return sig
+    tt = get_proper_type(api.get_expression_type(args[0][0]))
+    if not isinstance(tt, CallableType):
+        return sig
+    result = callable_t(
+        Arg(
+            typ=callable_t(
+                Arg(),
+                ret_type=supports_rich_comparison(
+                    ModifyInstance([tt.ret_type])
+                ),
+            )
+        ),
+        Arg(typ=bool_t()),
+        ret_type=none_t(),
+    ).try_match(sig)
+    if isinstance(result, TypeMatchError):
+        return sig
+    return verify_type(result, CallableType)
+
+
 class LiftAnyPlugin(Plugin):
     """Replace any occurrence of :class:`typing.Any` with :class:`object`."""
 
@@ -549,6 +644,7 @@ class LiftAnyPlugin(Plugin):
         return {
             BUILTINS_MIN: adjust_builtins_min_max,
             BUILTINS_MAX: adjust_builtins_min_max,
+            RANDOM_SHUFFLE: adjust_random_shuffle,
         }.get(fullname)
 
     def get_function_hook(
@@ -564,7 +660,22 @@ class LiftAnyPlugin(Plugin):
         """
         return {
             FIX_DECORATOR_TYPE_FUNC: adjust_universal_callable_in_decorator,
-            EMAIL_HEADER_DECODE_HEADER: adjust_return_email_header_decode_header,
+            EMAIL_HEADER_DECODE_HEADER: (
+                adjust_return_email_header_decode_header
+            ),
+        }.get(fullname)
+
+    def get_method_signature_hook(
+        self, fullname: str
+    ) -> Callable[[MethodSigContext], FunctionLike] | None:
+        """
+        Return a hook called when a method signature is checked.
+
+        :param fullname: The fully qualified name of the method being analyzed
+        :return: the hook called when a method signature is met
+        """
+        return {
+            BUILTINS_LIST_SORT: adjust_builtins_list_sort,
         }.get(fullname)
 
 

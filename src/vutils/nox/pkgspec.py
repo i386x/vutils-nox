@@ -11,10 +11,9 @@
 import email.header
 import enum
 import functools
-import os
 import pathlib
-from collections.abc import Iterable, Mapping, MutableSequence
-from typing import TYPE_CHECKING, Literal, Self
+from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence
+from typing import Literal, Self
 
 from nox.sessions import Session
 from packaging.version import Version
@@ -47,22 +46,23 @@ from vutils.nox.utils import (
     get_pkg_metadata_dir,
     is_installed,
     is_installed_as_editable,
-    is_mapping,
     is_mutable_mapping,
     log_diff,
     relative_path,
     remove_build_artifacts,
 )
 
-if TYPE_CHECKING:
-    from vutils.nox.typing import StrPath
+#: Type aliases
+type PkgSpecType = LocalDist | Security | str | None
 
 #: Keywords
 KW_ALL: Literal["all"] = "all"
 
 
 def fix_version(
-    metadata: object, session: Session, pyproject: PyProject
+    metadata: MutableMapping[str, object],
+    session: Session,
+    pyproject: PyProject,
 ) -> None:
     """
     Fix the project version.
@@ -71,54 +71,45 @@ def fix_version(
         distribution information
     :param session: The Nox session
     :param pyproject: The ``pyproject.toml`` data
-    :raises TypeError: when the metadata object is not a mutable mapping
     """
     if get_version(pyproject) == Version("0.0.0"):
         # If `metadata` contains the default version, the version is probably
         # dynamic
-        if not is_mutable_mapping(metadata):
-            raise TypeError("Metadata are not a mutable mapping")
         metadata[VERSION_KEY] = str(
             resolve_dynamic_version(session, pyproject)
         )
 
 
-def fix_description(metadata: object) -> None:
+def fix_description(metadata: MutableMapping[str, object]) -> None:
     """
     Fix the ``description`` field in metadata.
 
     :param metadata: The metadata object containing the project or a
         distribution information
-    :raises TypeError: when the metadata object is not a mutable mapping
 
     If ``description`` is empty, remove it from the metadata. This will ensure
     the compatibility between metadata obtained by different methods and from
     different sources.
     """
-    if not is_mutable_mapping(metadata):
-        raise TypeError("Metadata must be a mutable mapping")
     if DESCRIPTION_KEY not in metadata:
         return
     if not metadata[DESCRIPTION_KEY]:
         del metadata[DESCRIPTION_KEY]
 
 
-def fix_people(metadata: object) -> None:
+def fix_people(metadata: MutableMapping[str, object]) -> None:
     """
     Fix person-like fields in metadata.
 
     :param metadata: The metadata object containing the project or a
         distribution information
-    :raises TypeError: when the metadata object is not a mutable mapping or a
-        field has a wrong type
+    :raises TypeError: when a field has a wrong type
 
     In person-like fields (``author``, ``author_email``, ``maintainer``, and
     ``maintainer_email``) replace encoded data (``=?...?=``) with their
     origins. This will ensure the compatibility between metadata obtained by
     different methods and from different sources.
     """
-    if not is_mutable_mapping(metadata):
-        raise TypeError("Metadata must be a mutable mapping")
     for field in (
         AUTHOR_KEY,
         AUTHOR_EMAIL_KEY,
@@ -135,37 +126,31 @@ def fix_people(metadata: object) -> None:
         )
 
 
-def fix_license_file(metadata: object) -> None:
+def fix_license_file(metadata: MutableMapping[str, object]) -> None:
     """
-    Fix the ``license_field`` in metadata.
+    Fix the ``license_file`` in metadata.
 
     :param metadata: The metadata object containing the project or a
         distribution information
-    :raises TypeError: when the metadata object is not a mutable mapping
 
-    If the ``license_field`` has a :class:`str` type, wrap it into a list.
+    If the ``license_file`` has a :class:`str` type, wrap it into a list.
     """
-    if not is_mutable_mapping(metadata):
-        raise TypeError("Metadata must be a mutable mapping")
     if LICENSE_FILE_KEY in metadata:
         license_file = metadata[LICENSE_FILE_KEY]
         if isinstance(license_file, str):
             metadata[LICENSE_FILE_KEY] = [license_file]
 
 
-def remove_redundant(metadata: object) -> None:
+def remove_redundant(metadata: MutableMapping[str, object]) -> None:
     """
     Remove fields from metadata not needed for comparison.
 
     :param metadata: The metadata object containing the project or a
         distribution information
-    :raises TypeError: when the metadata object is not a mutable mapping
 
     This will ensure the compatibility between metadata obtained by different
     methods and from different sources.
     """
-    if not is_mutable_mapping(metadata):
-        raise TypeError("Metadata must be a mutable mapping")
     if DYNAMIC_KEY in metadata:
         del metadata[DYNAMIC_KEY]
 
@@ -173,24 +158,23 @@ def remove_redundant(metadata: object) -> None:
 class Metadata:
     """The project or a distribution metadata wrapper."""
 
-    #: The metadata object in JSON
-    metadata: Mapping[object, object]
-    #: The origin from which metadata were extracted
+    #: The metadata
+    metadata: Mapping[str, object]
+    #: The origin from which the metadata were extracted
     origin: PyProject | str
 
     __slots__ = ("metadata", "origin")
 
-    def __init__(self, metadata: object, origin: PyProject | str) -> None:
+    def __init__(
+        self, metadata: Mapping[str, object], origin: PyProject | str
+    ) -> None:
         """
         Initialize the wrapper.
 
         :param metadata: The metadata object containing the project or a
             distribution information
-        :param origin: The origin from which metadata were extracted
-        :raises TypeError: when the metadata object is not a mapping
+        :param origin: The origin from which the metadata were extracted
         """
-        if not is_mapping(metadata):
-            raise TypeError("Metadata must be a mapping")
         self.metadata = metadata
         self.origin = origin
 
@@ -229,7 +213,7 @@ class Metadata:
 
     @classmethod
     def from_pyproject(
-        cls, session: Session, path: os.PathLike[str] | None = None
+        cls, session: Session, path: pathlib.Path | None = None
     ) -> Self:
         """
         Load metadata from the ``pyproject.toml``-like file.
@@ -237,11 +221,17 @@ class Metadata:
         :param session: The Nox session
         :param path: The path to the ``pyproject.toml``-like file or to the
             directory where the ``pyproject.toml`` file is present
-        :return: the instance of :class:`.Metadata` initialized with the loaded
-            and processed metadata
+        :return: the instance of :class:`.Metadata`, initialized with the
+            loaded and processed metadata
+        :raises TypeError: when the metadata is not a mapping from :class:`str`
+            to :class:`object`
         """
         pyproject = load_pyproject(path)
         metadata = get_metadata(pyproject).as_json()
+        if not is_mutable_mapping(metadata, str, object, True):
+            raise TypeError(
+                "Metadata must be a mutable mapping from `str` to `object`"
+            )
         fix_version(metadata, session, pyproject)
         fix_description(metadata)
         fix_people(metadata)
@@ -256,17 +246,23 @@ class Metadata:
 
         :param session: The Nox session
         :param name: The name of the installed package
-        :return: the instance of :class:`.Metadata` initialized with the loaded
-            and processed metadata
+        :return: the instance of :class:`.Metadata`, initialized with the
+            loaded and processed metadata
+        :raises TypeError: when the metadata is not a mapping from :class:`str`
+            to :class:`object`
         """
         metadata = get_metadata_from_pkg(session, name)
+        if not is_mutable_mapping(metadata, str, object, True):
+            raise TypeError(
+                "Metadata must be a mutable mapping from `str` to `object`"
+            )
         fix_description(metadata)
         fix_people(metadata)
         fix_license_file(metadata)
         remove_redundant(metadata)
         return cls(metadata, name)
 
-    def license_files(self, session: Session) -> Iterable[os.PathLike[str]]:
+    def license_files(self, session: Session) -> Iterable[pathlib.Path]:
         """
         Gather license files.
 
@@ -274,7 +270,7 @@ class Metadata:
         :return: the list of license files
         :raises OSError: when the directory layout requirements were not met
         """
-        result: MutableSequence[os.PathLike[str]] = []
+        result: MutableSequence[pathlib.Path] = []
         if isinstance(self.origin, str):
             licenses_dir = (
                 get_pkg_metadata_dir(session, self.origin) / "licenses"
@@ -286,15 +282,9 @@ class Metadata:
                     raise OSError(f"Directory between licenses: `{item}`")
                 result.append(item)
             return result
-        globs = get_license_files(self.origin)
-        for pattern in globs:
-            for item in pathlib.Path.cwd().glob(pattern):
-                if item.is_dir():
-                    raise OSError(f"Directory between licenses: `{item}`")
-                result.append(item)
-        return result
+        return get_license_files(self.origin) or []
 
-    def is_equal_to(self, session: Session, other: Self) -> bool:
+    def is_equal_to(self, session: Session, other: Metadata) -> bool:
         """
         Compare two metadata wrappers for equality.
 
@@ -305,10 +295,11 @@ class Metadata:
         Two metadata wrappers are equal if and only if their underlying
         metadata objects are equal.
 
-        Two metadata objects are equal if all these conditions are satisfied:
+        Two metadata objects are equal if all of these conditions are
+        satisfied:
 
         * they are both mappings with the same content
-        * if they are referencing files, these files must be also identical
+        * if they are referencing files, these files must also be identical
         """
         if other is self:
             return True
@@ -362,7 +353,7 @@ class Installed(enum.IntEnum):
     EDITABLE = 2
 
 
-def wheel_version(path: os.PathLike[str] | None) -> Version:
+def wheel_version(path: pathlib.Path | None) -> Version:
     """
     Get the wheel version.
 
@@ -371,7 +362,7 @@ def wheel_version(path: os.PathLike[str] | None) -> Version:
     """
     if path is None:
         return Version("0.0.0")
-    version = Wheel(path).version
+    version = Wheel(str(path)).version
     if version is None:
         version = "0.0.0"
     return Version(version)
@@ -397,7 +388,7 @@ class LocalDist:
     #: The discovered metadata of the local package distribution
     __metadata: Metadata | None
     #: The discovered wheel
-    __wheel: os.PathLike[str] | None
+    __wheel: pathlib.Path | None
 
     __slots__ = ("kind", "__metadata", "__wheel")
 
@@ -411,7 +402,7 @@ class LocalDist:
         self.__metadata = None
         self.__wheel = None
 
-    def __eq__(self, other: Self) -> bool:
+    def __eq__(self, other: object) -> bool:
         """
         Test whether this object is equal to :xarg:`other`.
 
@@ -419,9 +410,11 @@ class LocalDist:
         :return: :obj:`True` if the distribution kinds of this object and the
             :xarg:`other` object are equal
         """
+        if not isinstance(other, LocalDist):
+            return False
         return self.kind == other.kind
 
-    def __lt__(self, other: Self) -> bool:
+    def __lt__(self, other: LocalDist) -> bool:
         """
         Test whether this object is less than :xarg:`other`.
 
@@ -451,14 +444,14 @@ class LocalDist:
         if not path.is_dir():
             return
 
-        wheels: MutableSequence[tuple[os.PathLike[str], Wheel]] = []
+        wheels: list[tuple[pathlib.Path, Wheel]] = []
         for whl in path.glob("*.whl"):
-            wheel = Wheel(whl)
+            wheel = Wheel(str(whl))
             if wheel.name is None or wheel.name != self.__metadata.name:
                 continue
             wheels.append((whl, wheel))
 
-        def keyfunc(item: tuple[os.PathLike[str], Wheel]) -> Version:
+        def keyfunc(item: tuple[pathlib.Path, Wheel]) -> Version:
             """
             Convert an item to the comparable object.
 
@@ -483,9 +476,13 @@ class LocalDist:
         :param mode: The installation mode
         :return: the pair containing information about how the local package is
             installed and whether the local package needs to be (re)installed
+        :raises ValueError: when the local package has no metadata
 
         This is an auxiliary method for :meth:`.LocalDist.install`.
         """
+        if self.__metadata is None:
+            raise ValueError("Missing the local package metadata")
+
         name = self.__metadata.name
 
         installed = Installed.NOT_INSTALLED
@@ -530,8 +527,8 @@ class LocalDist:
         Depending on how this package was discovered, it is installed either as
         a wheel or as an editable.
 
-        If the package is already installed, :xarg:`mode` is taken account and
-        the following logic applies:
+        If the package is already installed, :xarg:`mode` is taken in account
+        and the following logic applies:
 
         * If :xarg:`mode` is :attr:`.InstallMode.NOINSTALL` and the package is
           editable, the package is reinstalled only when its metadata have
@@ -556,7 +553,7 @@ class LocalDist:
         if installed > Installed.NOT_INSTALLED:
             self.remove(session)
 
-        args: MutableSequence[StrPath] = []
+        args: MutableSequence[str] = []
         if self.kind == DistKind.EDITABLE:
             args.extend(["-e", "."])
         else:

@@ -29,12 +29,14 @@ FIX_DECORATOR_TYPE_FUNC = "vutils.nox.mypy.typing.fix_decorator_type"
 
 #: Names of some important types
 ANY_TYPE = "typing.Any"
+BOOL_TYPE = "builtins.bool"
 BYTES_TYPE = "builtins.bytes"
 CALLABLE_TYPE = "typing.Callable"
 DICT_TYPE = "builtins.dict"
 FUNCTION_TYPE = "builtins.function"
 ITERABLE_TYPE = "typing.Iterable"
 LIST_TYPE = "builtins.list"
+MUTABLE_SEQUENCE_TYPE = "typing.MutableSequence"
 OBJECT_TYPE = "builtins.object"
 STR_TYPE = "builtins.str"
 TUPLE_TYPE = "builtins.tuple"
@@ -112,7 +114,7 @@ class ParamSpec:
     """Parameter specification."""
 
     #: The bare flavor of the parameter specification
-    __bare: ParamSpecType,
+    __bare: ParamSpecType
     #: The *args* flavor of the parameter specification
     __args: ParamSpecType
     #: The *kwargs* flavor of the parameter specification
@@ -162,7 +164,7 @@ class ParamSpec:
 
         :return: the *kwargs* flavor of the parameter specification
         """
-        return self.__args
+        return self.__kwargs
 
 
 class ParamSpecFactory:
@@ -180,6 +182,7 @@ class ParamSpecFactory:
     __slots__ = ("__api", "__namespace", "__variables", "__storage")
 
     def __init__(
+        self,
         api: TypeChecker,
         namespace: str,
         variables: Sequence[TypeVarLikeType] | None = None,

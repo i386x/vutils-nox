@@ -79,7 +79,7 @@ Local workflow:
 
 import tempfile
 from collections.abc import Iterable, MutableSequence, Sequence
-from typing import TYPE_CHECKING, Generator, Unpack
+from typing import Generator, Unpack
 
 from nox.sessions import Session
 
@@ -91,7 +91,14 @@ from vutils.nox.command import (
     Command,
     find_package,
 )
-from vutils.nox.decorators import KW_REQUIRES, KW_TAGS, add, cfg, dep
+from vutils.nox.decorators import (
+    KW_REQUIRES,
+    KW_TAGS,
+    MatrixArgs,
+    add,
+    cfg,
+    dep,
+)
 from vutils.nox.pkgspec import KW_ALL, LocalDist
 from vutils.nox.project import (
     project_name,
@@ -115,9 +122,6 @@ from vutils.nox.utils import (
     src_dir,
     upgrade_pip,
 )
-
-if TYPE_CHECKING:
-    from vutils.nox.typing import MatrixArgs
 
 #: Run the check subset of linters
 CHECK_TAG = "check"
@@ -775,7 +779,7 @@ class Flake8(Linter):
     "tool::pylint::message control",
     {
         "enable": ["useless-suppression"],
-        # `mypy` does the better job
+        # Mypy does the better job
         "disable": ["no-member"],
     },
 )
@@ -835,7 +839,7 @@ class Pylint(Linter):
         "show_traceback": True,
         "warn_incomplete_stub": True,
         "warn_unused_configs": True,
-        "plugins": "vutils.nox.mypy",
+        "plugins": "vutils.nox.mypy.liftany",
     },
 )
 @dep("%pyproject")

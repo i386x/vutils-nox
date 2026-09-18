@@ -8,8 +8,8 @@
 #
 """Patterns and matching over types."""
 
-from collections.abc import Callable, Sequence
 import functools
+from collections.abc import Callable, Sequence
 
 from mypy.nodes import ARG_POS, ARG_STAR, ARG_STAR2, ArgKind, TypeAlias
 from mypy.types import (
@@ -17,6 +17,7 @@ from mypy.types import (
     Instance,
     LiteralType,
     NoneType,
+    TupleType,
     Type,
     TypeAliasType,
     TypeVarLikeType,
@@ -24,26 +25,26 @@ from mypy.types import (
     UnionType,
 )
 
+from vutils.nox.mypy.typing import fix_decorator_type
 from vutils.nox.mypy.utils import (
+    BOOL_TYPE,
     LIST_TYPE,
     OBJECT_TYPE,
-    TUPLE_TYPE,
     verify_type,
 )
 
 #: Type aliases
-type InstanceAction = Callable[
+type OnInstance = Callable[
     [Instance, Sequence[Type], LiteralType | None], Type
 ]
-type CallableAction = Callable[
+type OnCallable = Callable[
     [CallableType, Sequence[Type], Type, Sequence[TypeVarLikeType]], Type
 ]
-type UnionAction = Callable[[UnionType, Sequence[Type]], Type]
-type TypeVarAction = Callable[
-    [TypeVarType, Type, Sequence[Type], Type], Type
-]
-type TypeAliasAction = Callable[
-    [TypeAliasType, TypeAlias, Sequence[Type]], Type
+type OnTuple = Callable[[TupleType, Sequence[Type], Instance], Type]
+type OnUnion = Callable[[UnionType, Sequence[Type]], Type]
+type OnTypeVar = Callable[[TypeVarType, Type, Sequence[Type], Type], Type]
+type OnTypeAlias = Callable[
+    [TypeAliasType, TypeAlias | None, Sequence[Type]], Type
 ]
 
 
@@ -139,16 +140,22 @@ class Pattern[T: Type | Sequence[Type]]:
         :class:`.UnionTypePattern`, respectively. If none of them is an
         instance of :class:`.UnionTypePattern`, no action is set.
         """
-        action: UnionAction | None = None
+        action: OnUnion | None = None
         if isinstance(self, UnionTypePattern):
             action = self.action
         elif isinstance(other, UnionTypePattern):
             action = other.action
         return UnionTypePattern(
-            *self.items.patterns if isinstance(self, UnionTypePattern)
-            else self,
-            *other.items.patterns if isinstance(other, UnionTypePattern)
-            else other,
+            *(
+                self.items.patterns
+                if isinstance(self, UnionTypePattern)
+                else (self,)
+            ),
+            *(
+                other.items.patterns
+                if isinstance(other, UnionTypePattern)
+                else (other,)
+            ),
             action=action,
         )
 
@@ -171,18 +178,18 @@ class Many[T: Type](Pattern[Sequence[T]]):
         super().__init__()
         self.pattern = pattern
 
-    def match(self, seq: Sequence[T]) -> Sequence[T]:
+    def match(self, t: Sequence[T]) -> Sequence[T]:
         """
         Match a sequence of types.
 
-        :param seq: The sequence of types
+        :param t: The sequence of types
         :return: the sequence of types where each type is either an element of
-            :xarg:`seq` or a modified copy of an element of :xarg:`seq` or a
-            custom type based on the element of :xarg:`seq` returned by the
-            user-defined action
+            :xarg:`t` or a modified copy of an element of :xarg:`t` or a custom
+            type based on the element of :xarg:`t` returned by the user-defined
+            action
         :raises .TypeMatchError: on the first unsuccessful match
         """
-        return list(map(self.pattern.match, seq))
+        return list(map(self.pattern.match, t))
 
 
 class Seq[T: Type](Pattern[Sequence[T]]):
@@ -205,20 +212,20 @@ class Seq[T: Type](Pattern[Sequence[T]]):
         super().__init__()
         self.patterns = patterns
 
-    def match(self, seq: Sequence[T]) -> Sequence[T]:
+    def match(self, t: Sequence[T]) -> Sequence[T]:
         """
         Match a sequence of types.
 
-        :param seq: The sequence of types
+        :param t: The sequence of types
         :return: the sequence of types where each type is either an element of
-            :xarg:`seq` or a modified copy of an element of :xarg:`seq` or a
-            custom type based on the element of :xarg:`seq` returned by the
-            user-defined action
+            :xarg:`t` or a modified copy of an element of :xarg:`t` or a custom
+            type based on the element of :xarg:`t` returned by the user-defined
+            action
         :raises .TypeMatchError: on the first unsuccessful match
         """
-        if len(self.patterns) != len(seq):
-            raise TypeMatchError(f"Sequences are of different lengths")
-        return [p.match(t) for p, t in zip(self.patterns, seq)]
+        if len(self.patterns) != len(t):
+            raise TypeMatchError("Sequences are of different lengths")
+        return [p.match(tt) for p, tt in zip(self.patterns, t)]
 
 
 class SimpleTypePattern(Pattern[Type]):
@@ -259,7 +266,7 @@ class InstancePattern(Pattern[Type]):
     #: The pattern for the *last known value*
     last_known_value: Pattern[Type] | None
     #: The action to be invoked on a successful match
-    action: InstanceAction | None
+    action: OnInstance | None
 
     __slots__ = ("fullname", "args", "last_known_value", "action")
 
@@ -268,7 +275,7 @@ class InstancePattern(Pattern[Type]):
         fullname: str | None = None,
         args: Pattern[Sequence[Type]] | None = None,
         last_known_value: Pattern[Type] | None = None,
-        action: InstanceAction | None = None,
+        action: OnInstance | None = None,
     ) -> None:
         """
         Initialize the pattern.
@@ -375,11 +382,15 @@ class Arg:
         """
         if self.kind is not None:
             if kind != self.kind:
-                raise TypeMatchError(f"Argument kind mismatch")
+                raise TypeMatchError("Argument kind mismatch")
         if self.name is not None:
-            if name is None and self.name != ""
-            or name is not None and name != self.name:
-                raise TypeMatchError(f"Argument name mismatch")
+            if (
+                name is None
+                and self.name != ""
+                or name is not None
+                and name != self.name
+            ):
+                raise TypeMatchError("Argument name mismatch")
         if self.typ:
             return self.typ.match(typ)
         return typ
@@ -412,12 +423,12 @@ class Args:
             action
         :raises .TypeMatchError: on the first unsuccessful match
         """
-        if len(args) != len(t.arg_kinds):
-            raise TypeMatchError(f"The number of arguments does not match")
+        if len(self.args) != len(t.arg_kinds):
+            raise TypeMatchError("The number of arguments does not match")
         return [
             arg.match(kind, typ, name)
             for arg, kind, typ, name in zip(
-                args, t.arg_kinds, t.arg_types, t.arg_names
+                self.args, t.arg_kinds, t.arg_types, t.arg_names
             )
         ]
 
@@ -432,7 +443,7 @@ class CallableTypePattern(Pattern[Type]):
     #: The pattern for type variables of a callable type
     variables: Pattern[Sequence[TypeVarLikeType]] | None
     #: The action to be invoked on a successful match
-    action: CallableAction | None
+    action: OnCallable | None
 
     __slots__ = ("args", "ret_type", "variables", "action")
 
@@ -441,7 +452,7 @@ class CallableTypePattern(Pattern[Type]):
         *args: Arg | None,
         ret_type: Pattern[Type] | None = None,
         variables: Pattern[Sequence[TypeVarLikeType]] | None = None,
-        action: CallableAction | None,
+        action: OnCallable | None = None,
     ) -> None:
         """
         Initialize the pattern.
@@ -494,7 +505,8 @@ class CallableTypePattern(Pattern[Type]):
         )
         variables = (
             self.variables.match(tt.variables)
-            if self.variables else tt.variables
+            if self.variables
+            else tt.variables
         )
         if self.action:
             return self.action(tt, arg_types, ret_type, variables)
@@ -503,18 +515,72 @@ class CallableTypePattern(Pattern[Type]):
         )
 
 
+class TupleTypePattern(Pattern[Type]):
+    """A pattern for :class:`mypy.types.TupleType` types."""
+
+    #: The pattern for types in a tuple of types
+    items: Seq[Type]
+    #: The pattern for a tuple of types fallback
+    fallback: Pattern[Instance] | None
+    #: The action to be invoked on a successful match
+    action: OnTuple | None
+
+    __slots__ = ("items", "fallback", "action")
+
+    def __init__(
+        self,
+        *args: Pattern[Type],
+        fallback: Pattern[Instance] | None = None,
+        action: OnTuple | None = None,
+    ) -> None:
+        """
+        Initialize the pattern.
+
+        :param args: Patterns for types in a tuple of types
+        :param fallback: The pattern for a tuple of types fallback
+        :param action: The action to be invoked on a successful match
+
+        If any of parameters is :obj:`None`, then the matching against this
+        parameter is skipped.
+        """
+        super().__init__()
+        self.items = Seq(args)
+        self.fallback = fallback
+        self.action = action
+
+    def match(self, t: Type) -> Type:
+        """
+        Match a tuple of types.
+
+        :param t: The tuple of types
+        :return: a modified copy of :xarg:`t` or a custom type based on
+            :xarg:`t` returned by the user-defined action
+        :raises .TypeMatchError: on an unsuccessful match
+        """
+        tt = check(t, TupleType)
+        items = self.items.match(tt.items)
+        fallback = (
+            self.fallback.match(tt.partial_fallback)
+            if self.fallback
+            else tt.partial_fallback
+        )
+        if self.action:
+            return self.action(tt, items, fallback)
+        return tt.copy_modified(items=list(items), fallback=fallback)
+
+
 class UnionTypePattern(Pattern[Type]):
     """A pattern for :class:`mypy.types.UnionType` types."""
 
     #: The pattern for types in a union of types
     items: Seq[Type]
     #: The action to be invoked on a successful match
-    action: UnionAction | None
+    action: OnUnion | None
 
     __slots__ = ("items", "action")
 
     def __init__(
-        self, *args: Pattern[Type], action: UnionAction | None = None
+        self, *args: Pattern[Type], action: OnUnion | None = None
     ) -> None:
         """
         Initialize the pattern.
@@ -560,7 +626,7 @@ class TypeVarTypePattern(Pattern[Type]):
     #: The pattern for the default value of a type variable
     default: Pattern[Type] | None
     #: The action to be invoked on a successful match
-    action: TypeVarAction | None
+    action: OnTypeVar | None
 
     __slots__ = ("fullname", "upper_bound", "values", "default", "action")
 
@@ -570,7 +636,7 @@ class TypeVarTypePattern(Pattern[Type]):
         upper_bound: Pattern[Type] | None = None,
         values: Pattern[Sequence[Type]] | None = None,
         default: Pattern[Type] | None = None,
-        action: TypeVarAction | None = None,
+        action: OnTypeVar | None = None,
     ) -> None:
         """
         Initialize the pattern.
@@ -612,10 +678,11 @@ class TypeVarTypePattern(Pattern[Type]):
             return tt
         if self.fullname is not None:
             if tt.fullname != self.fullname:
-                raise TypeMatchError(f"Full name mismatch")
+                raise TypeMatchError("Full name mismatch")
         upper_bound = (
             self.upper_bound.match(tt.upper_bound)
-            if self.upper_bound else tt.upper_bound
+            if self.upper_bound
+            else tt.upper_bound
         )
         values = self.values.match(tt.values) if self.values else tt.values
         default = (
@@ -640,7 +707,7 @@ class TypeAliasTypePattern(Pattern[Type]):
     #: The pattern for arguments of a type alias
     args: Pattern[Sequence[Type]] | None
     #: The action to be invoked on a successful match
-    action: TypeAliasAction | None
+    action: OnTypeAlias | None
 
     __slots__ = ("fullname", "target", "tvars", "args", "action")
 
@@ -650,7 +717,7 @@ class TypeAliasTypePattern(Pattern[Type]):
         target: Pattern[Type] | None = None,
         tvars: Pattern[Sequence[TypeVarLikeType]] | None = None,
         args: Pattern[Sequence[Type]] | None = None,
-        action: TypeAliasAction | None = None,
+        action: OnTypeAlias | None = None,
     ) -> None:
         """
         Initialize the pattern.
@@ -690,13 +757,10 @@ class TypeAliasTypePattern(Pattern[Type]):
         ):
             return tt
         alias = tt.alias
-        if (
-            alias is None
-            and (
-                self.fullname is not None
-                or self.target is not None
-                or self.tvars is not None
-            )
+        if alias is None and (
+            self.fullname is not None
+            or self.target is not None
+            or self.tvars is not None
         ):
             raise TypeMatchError("Missing alias")
         if alias:
@@ -705,11 +769,13 @@ class TypeAliasTypePattern(Pattern[Type]):
                     raise TypeMatchError("Full name mismatch")
             target = (
                 self.target.match(alias.target)
-                if self.target else alias.target
+                if self.target
+                else alias.target
             )
-            tvars = (
+            tvars = list(
                 self.tvars.match(alias.alias_tvars)
-                if self.tvars else alias.alias_tvars
+                if self.tvars
+                else alias.alias_tvars
             )
             if target is not alias.target or tvars is not alias.alias_tvars:
                 alias = TypeAlias(
@@ -724,13 +790,13 @@ class TypeAliasTypePattern(Pattern[Type]):
                     eager=alias.eager,
                     python_3_12_type_alias=alias.python_3_12_type_alias,
                 )
-        args = self.args.match(tt.args) if self.args else tt.args
+        args = list(self.args.match(tt.args) if self.args else tt.args)
         if self.action:
             return self.action(tt, alias, args)
         return TypeAliasType(alias, args, tt.line, tt.column)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def none_t() -> SimpleTypePattern:
     """
     Create a pattern for the :obj:`None` type.
@@ -740,12 +806,12 @@ def none_t() -> SimpleTypePattern:
     return SimpleTypePattern(NoneType)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def instance_t(
     fullname: str,
     *args: Pattern[Type],
     last_known_value: Pattern[Type] | None = None,
-    action: InstanceAction | None = None,
+    action: OnInstance | None = None,
 ) -> InstancePattern:
     """
     Create a pattern for an instance type.
@@ -757,12 +823,12 @@ def instance_t(
     :return: the pattern for an instance type
     """
     return InstancePattern(
-        fullname, Seq(*args), last_known_value=last_known_value, action=action
+        fullname, Seq(args), last_known_value=last_known_value, action=action
     )
 
 
-@functools.cache
-def object_t(action: InstanceAction | None = None) -> InstancePattern:
+@fix_decorator_type(functools.cache)
+def object_t(action: OnInstance | None = None) -> InstancePattern:
     """
     Create a pattern for :class:`object`.
 
@@ -772,23 +838,20 @@ def object_t(action: InstanceAction | None = None) -> InstancePattern:
     return instance_t(OBJECT_TYPE, action=action)
 
 
-@functools.cache
-def tuple_t(
-    *args: Pattern[Type], action: InstanceAction | None = None
-) -> InstancePattern:
+@fix_decorator_type(functools.cache)
+def bool_t(action: OnInstance | None = None) -> InstancePattern:
     """
-    Create a pattern for :class:`tuple`.
+    Create a pattern for :class:`bool`.
 
-    :param args: Patterns for a :class:`tuple` type arguments
     :param action: The action to be invoked on a successful match
-    :return: the pattern for :class:`tuple`
+    :return: the pattern for :class:`bool`
     """
-    return instance_t(TUPLE_TYPE, *args, action=action)
+    return instance_t(BOOL_TYPE, action=action)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def list_t(
-    *args: Pattern[Type], action: InstanceAction | None = None
+    *args: Pattern[Type], action: OnInstance | None = None
 ) -> InstancePattern:
     """
     Create a pattern for :class:`list`.
@@ -800,7 +863,7 @@ def list_t(
     return instance_t(LIST_TYPE, *args, action=action)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def parg(t: Pattern[Type], name: str | None = None) -> Arg:
     """
     Create a pattern for a positional argument.
@@ -812,7 +875,7 @@ def parg(t: Pattern[Type], name: str | None = None) -> Arg:
     return Arg(ARG_POS, t, name)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def pargs(t: Pattern[Type], name: str | None = None) -> Arg:
     """
     Create a pattern for positional-only arguments.
@@ -824,7 +887,7 @@ def pargs(t: Pattern[Type], name: str | None = None) -> Arg:
     return Arg(ARG_STAR, t, name)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def kargs(t: Pattern[Type], name: str | None = None) -> Arg:
     """
     Create a pattern for key-value-only arguments.
@@ -836,12 +899,12 @@ def kargs(t: Pattern[Type], name: str | None = None) -> Arg:
     return Arg(ARG_STAR2, t, name)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def callable_t(
     *args: Arg | None,
     ret_type: Pattern[Type] | None = None,
     variables: Pattern[Sequence[TypeVarLikeType]] | None = None,
-    action: CallableAction | None = None,
+    action: OnCallable | None = None,
 ) -> CallableTypePattern:
     """
     Create a pattern for a callable type.
@@ -857,9 +920,9 @@ def callable_t(
     )
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def universal_callable_t(
-    action: CallableAction | None = None,
+    action: OnCallable | None = None,
 ) -> CallableTypePattern:
     """
     Create a pattern for ``Callable[[*object, **object], T]``.
@@ -871,13 +934,30 @@ def universal_callable_t(
     return callable_t(pargs(obj_t), kargs(obj_t), action=action)
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
+def tuple_t(
+    *args: Pattern[Type],
+    fallback: Pattern[Instance] | None = None,
+    action: OnTuple | None = None,
+) -> TupleTypePattern:
+    """
+    Create a pattern for a tuple of types.
+
+    :param args: Patterns for types in a tuple of types
+    :param fallback: The pattern for a tuple of types fallback
+    :param action: The action to be invoked on a successful match
+    :return: the pattern for a tuple of types
+    """
+    return TupleTypePattern(*args, fallback=fallback, action=action)
+
+
+@fix_decorator_type(functools.cache)
 def typevar_t(
     fullname: str,
     upper_bound: Pattern[Type],
     values: Pattern[Sequence[Type]] | None = None,
     default: Pattern[Type] | None = None,
-    action: TypeVarAction | None = None,
+    action: OnTypeVar | None = None,
 ) -> TypeVarTypePattern:
     """
     Create a pattern for a type variable type.
@@ -894,13 +974,13 @@ def typevar_t(
     )
 
 
-@functools.cache
+@fix_decorator_type(functools.cache)
 def type_alias(
     fullname: str,
     target: Pattern[Type],
     tvars: Pattern[Sequence[TypeVarLikeType]] | None = None,
     args: Pattern[Sequence[Type]] | None = None,
-    action: TypeAliasAction | None = None,
+    action: OnTypeAlias | None = None,
 ) -> TypeAliasTypePattern:
     """
     Create a pattern for a type alias type.

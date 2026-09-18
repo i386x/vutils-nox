@@ -10,9 +10,9 @@
 
 import configparser
 import hashlib
-import os
+import pathlib
 from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence
-from typing import TYPE_CHECKING, Annotated, Generator, Literal, Self, TypeVar
+from typing import TYPE_CHECKING, Annotated, Generator, Literal, TypeIs
 
 from nox.logger import logger
 from nox.sessions import Session
@@ -20,14 +20,25 @@ from nox.virtualenv import CondaEnv, VirtualEnv
 from pydantic import BaseModel, StringConstraints
 from tomli_w import dump as toml_dump
 
-from vutils.nox.pkgspec import InstallMode, LocalDist, Security
-from vutils.nox.utils import DANGER_ENV_VARS, data2str, mergeinsert, setenv
+from vutils.nox.pkgspec import InstallMode, LocalDist, PkgSpecType, Security
+from vutils.nox.utils import (
+    DANGER_ENV_VARS,
+    data2str,
+    is_mapping,
+    mergeinsert,
+    setenv,
+)
 
 if TYPE_CHECKING:
     from vutils.nox.command import Command
-    from vutils.nox.typing import ConfType, PkgSpecType
 
-T = TypeVar("T", bound=Security | str)
+#: Type aliases
+type ConfType = Mapping[str, object]
+type MutConfType = MutableMapping[str, object]
+type RawConfType = Mapping[str, ConfType]
+type MutRawConfType = MutableMapping[str, MutConfType]
+type DepsType = Mapping[str, PkgSpecType]
+type MutDepsType = MutableMapping[str, PkgSpecType]
 
 #: Parameters, keys, and properties
 KW_CONF: Literal["conf"] = "conf"
@@ -54,7 +65,7 @@ class CommandState:
     #: The name of the file that serves as the persistent storage
     __name: str
     #: The path to the persistent storage
-    __storage: os.PathLike[str] | None
+    __storage: pathlib.Path | None
     #: The data reflecting the command state
     __data: CommandStateData
 
@@ -70,7 +81,7 @@ class CommandState:
         self.__storage = None
         self.__data = CommandStateData(dependencies={}, configuration={})
 
-    def __get_storage(self, session: Session) -> os.PathLike[str]:
+    def __get_storage(self, session: Session) -> pathlib.Path:
         """
         Get the path to the persistent storage.
 
@@ -115,7 +126,7 @@ class CommandState:
         with storage.open("w") as fobj:
             fobj.write(self.__data.model_dump_json(warnings="error"))
 
-    def changed_deps(self, command: "Command") -> bool:
+    def changed_deps(self, command: Command) -> bool:
         """
         Check whether the set of packages to install has been changed.
 
@@ -124,7 +135,7 @@ class CommandState:
             :xarg:`command` has been changed
         """
 
-        def callback(cmd: "Command") -> None:
+        def callback(cmd: Command) -> None:
             """
             Gather the state of :xarg:`cmd`'s dependencies.
 
@@ -134,7 +145,7 @@ class CommandState:
 
         # Gather the state of subcommands' dependencies ...
         command.traverse(callback)
-        # ... and then of command's ones
+        # ... and then of the command's ones
         cmd2sum = self.__data.dependencies
         new_checksum = command.checksum(KW_DEPS)
         changed = command.name not in cmd2sum
@@ -158,17 +169,22 @@ class CommandState:
             return True
         return changed
 
-    def changed_conf(self, command: "Command") -> bool:
+    def changed_conf(self, command: Command) -> bool:
         """
         Check whether the configuration has been changed.
 
         :param command: The command
         :return: :obj:`True` if the configuration associated with
             :xarg:`command` has been changed
+        :raises TypeError: when internally used :meth:`Command.config
+            <vutils.nox.command.Command.config>` does not return :class:`str`
+            or :obj:`None`, which indicates a bug in the tool's internal logic
         """
         config = command.config()
         if config is None:
             return False
+        if not isinstance(config, str):
+            raise TypeError("`command.config()` should return `str` (a bug?)")
         cfg2sum = self.__data.configuration
         new_checksum = command.checksum(KW_CONF)
         changed = config not in cfg2sum
@@ -193,7 +209,7 @@ class CommandState:
         return changed
 
 
-class Container:
+class Container[T]:
     """Base class for dependencies and configuration containers."""
 
     #: The container data checksum
@@ -205,7 +221,7 @@ class Container:
         """Initialize the container."""
         self.__checksum = None
 
-    def add(self, name: str, item: object) -> None:
+    def add(self, name: str, item: T) -> None:
         """
         Add an item to the container.
 
@@ -248,8 +264,8 @@ class Container:
         return self.__checksum
 
 
-def add_deps_to(
-    container: "Dependencies", deps: Mapping[str, Iterable[T]], kind: T
+def add_deps_to[T: Security | str](
+    container: Dependencies, deps: Mapping[str, Iterable[T]], kind: T
 ) -> None:
     """
     Add dependencies to the container.
@@ -266,13 +282,13 @@ def add_deps_to(
         container.add(pkg, kind)
 
 
-class Dependencies(Container):
+class Dependencies(Container[PkgSpecType]):
     """Python package dependencies container."""
 
     #: Updates (these will be prioritized over ordinary dependencies)
-    __updates: MutableMapping[str, Iterable[Security]]
+    __updates: MutableMapping[str, MutableSequence[Security]]
     #: Ordinary dependencies
-    __main: MutableMapping[str, Iterable[str]]
+    __main: MutableMapping[str, MutableSequence[str]]
     #: A local Python package distribution
     __local: LocalDist | None
     #: All dependencies converted to arguments passable to the Python package
@@ -283,13 +299,13 @@ class Dependencies(Container):
 
     def __init__(self) -> None:
         """Initialize the container."""
-        Container.__init__(self)
+        super().__init__()
         self.__updates = {}
         self.__main = {}
         self.__local = None
         self.__install_args = []
 
-    def add(self, name: str, item: "PkgSpecType") -> None:
+    def add(self, name: str, item: PkgSpecType) -> None:
         """
         Add a dependency to the container.
 
@@ -344,7 +360,7 @@ class Dependencies(Container):
             if self.__local is None or self.__local <= item:
                 self.__local = item
 
-    def add_myself_to(self, container: Self) -> None:
+    def add_myself_to(self, container: Dependencies) -> None:
         """
         Add the content of this container to :xarg:`container`.
 
@@ -372,7 +388,7 @@ class Dependencies(Container):
                     )
                 else:
                     self.__install_args.append(pkg)
-        Container.commit(self)
+        super().commit()
 
     def items(self) -> Generator[str, None, None]:
         """
@@ -388,7 +404,7 @@ class Dependencies(Container):
     def install(
         self,
         session: Session,
-        command: "Command",
+        command: Command,
         mode: InstallMode = InstallMode.NOINSTALL,
     ) -> None:
         """
@@ -411,17 +427,28 @@ class Dependencies(Container):
                 session.install(*self.__install_args, silent=False)
 
 
-class Configuration(Container):
+def is_config_data(data: ConfType) -> TypeIs[RawConfType]:
+    """
+    Narrow the type of :xarg:`data` to :type:`.RawConfType`.
+
+    :param data: The configuration data
+    :return: :obj:`True` if :xarg:`data` can be narrowed to
+        :type:`.RawConfType`
+    """
+    return all(is_mapping(data[key], str, object) for key in data)
+
+
+class Configuration(Container[object]):
     """Configuration container."""
 
     #: The configuration data
-    __data: "ConfType"
+    __data: MutConfType
 
     __slots__ = ("__data",)
 
     def __init__(self) -> None:
         """Initialize the container."""
-        Container.__init__(self)
+        super().__init__()
         self.__data = {}
 
     def add(self, name: str, item: object) -> None:
@@ -442,31 +469,35 @@ class Configuration(Container):
         """
         yield from data2str(self.__data)
 
-    def __write_config(self, path: os.PathLike[str]) -> None:
+    def __write_config(self, path: pathlib.Path) -> None:
         """
         Dump the configuration to the file.
 
         :param path: The path to the file to which the configuration is going
             to be stored
         :raises ValueError: when the configuration format, derived from the
-            suffix or the name of the configuration file, is not supported
+            suffix or the name of the configuration file, is not supported or
+            when the configuration data are ill-formed
 
         A file with no suffix whose name ends with ``rc`` is treated as INI
         file.
         """
         suffix = path.suffix
+        data = self.__data
+        if not is_config_data(data):
+            raise ValueError("The configuration data are lacking sections")
         if suffix == ".toml":
             with path.open("wb") as fobj:
-                toml_dump(self.__data, fobj)
+                toml_dump(data, fobj)
         elif suffix in (".cfg", ".ini") or path.name.endswith("rc"):
             parser = configparser.ConfigParser()
-            parser.read_dict(self.__data)
+            parser.read_dict(data)
             with path.open("w") as fobj:
                 parser.write(fobj)
         else:
             raise ValueError(f"{path.name}: Format is not supported")
 
-    def config(self, command: "Command") -> os.PathLike[str]:
+    def config(self, command: Command) -> pathlib.Path:
         """
         Prepare and get the configuration file for the command.
 

@@ -25,18 +25,13 @@ from collections.abc import (
     MutableSequence,
     Sequence,
 )
-from typing import TYPE_CHECKING, Generator, Literal, TypeVar
+from typing import Generator, Literal, TypeIs
 
 from nox.logger import logger
 from nox.sessions import Session
 from nox.virtualenv import CondaEnv, VirtualEnv
-from typing_extensions import TypeIs
 
-if TYPE_CHECKING:
-    from vutils.nox.typing import StrPath
-
-#: Type variables
-T = TypeVar("T")
+from vutils.nox.mypy.typing import StrPath, fix_decorator_type
 
 #: Keywords
 KW_PYTHON: Literal["python"] = "python"
@@ -59,7 +54,7 @@ DATAPATH_SEP = "::"
 
 #: The regular expression for identifying import failures in the output of a
 #: Python script
-IMPORT_ERROR_RE = re.compile("Traceback|ModuleNotFoundError|ImportError")
+IMPORT_ERROR_RE = re.compile("SyntaxError|ModuleNotFoundError|ImportError")
 
 
 def identical(lhs: object, rhs: object) -> bool:
@@ -80,34 +75,71 @@ def identical(lhs: object, rhs: object) -> bool:
     return lhs is rhs
 
 
-def is_sequence(obj: object) -> TypeIs[Sequence[object]]:
+def is_sequence[T](
+    obj: object, base: type[T], total_check: bool = False
+) -> TypeIs[Sequence[T]]:
     """
-    Narrow the type of :xarg:`obj` to the sequence.
+    Narrow the type of :xarg:`obj` to the sequence type.
 
     :param obj: The object
-    :return: :obj:`True` if :xarg:`obj` is a sequence
+    :param base: The underlying type of the sequence type
+    :param total_check: The flag indicating whether to check all the elements
+        int the sequence
+    :return: :obj:`True` if :xarg:`obj` is a sequence with the underlying type
+        :xarg:`base`
     """
-    return isinstance(obj, Sequence)
+    if isinstance(obj, Sequence):
+        if len(obj) == 0 or base is object:
+            return True
+        if total_check:
+            return all(isinstance(item, base) for item in obj)
+        return isinstance(obj[0], base)
+    return False
 
 
-def is_mapping(obj: object) -> TypeIs[Mapping[object, object]]:
+def is_mapping[K, V](
+    obj: object, kt: type[K], vt: type[V], total_check: bool = False
+) -> TypeIs[Mapping[K, V]]:
     """
-    Narrow the type of :xarg:`obj` to the mapping.
+    Narrow the type of :xarg:`obj` to the mapping type.
 
     :param obj: The object
-    :return: :obj:`True` if :xarg:`obj` is a mapping
+    :param kt: The key type
+    :param vt: The value type
+    :param total_check: The flag indicating whether to check all the key-value
+        pairs in the mapping
+    :return: :obj:`True` if :xarg:`obj` is a mapping with the key type
+        :xarg:`kt` and the value type :xarg:`vt`
     """
-    return isinstance(obj, Mapping)
+    if isinstance(obj, Mapping):
+        if len(obj) == 0 or kt is object and vt is object:
+            return True
+        for key in obj:
+            if not isinstance(key, kt) or not isinstance(obj[key], vt):
+                return False
+            if not total_check:
+                return True
+        return True
+    return False
 
 
-def is_mutable_mapping(obj: object) -> TypeIs[MutableMapping[object, object]]:
+def is_mutable_mapping[K, V](
+    obj: object, kt: type[K], vt: type[V], total_check: bool = False
+) -> TypeIs[MutableMapping[K, V]]:
     """
     Narrow the type of :xarg:`obj` to the mutable mapping.
 
     :param obj: The object
-    :return: :obj:`True` if :xarg:`obj` is a mutable mapping
+    :param kt: The key type
+    :param vt: The value type
+    :param total_check: The flag indicating whether to check all the key-value
+        pairs in the mapping
+    :return: :obj:`True` if :xarg:`obj` is a mutable mapping with the key type
+        :xarg:`kt` and the value type :xarg:`vt`
     """
-    return isinstance(obj, MutableMapping)
+    return isinstance(obj, MutableMapping) and is_mapping(
+        obj, kt, vt, total_check
+    )
 
 
 def data2str(data: object) -> Generator[str, None, None]:
@@ -121,7 +153,7 @@ def data2str(data: object) -> Generator[str, None, None]:
 
     Can be used to obtain the checksum of the data.
     """
-    if is_mapping(data):
+    if is_mapping(data, object, object):
         yield "{"
 
         for key in data:
@@ -133,7 +165,7 @@ def data2str(data: object) -> Generator[str, None, None]:
         yield "}"
     elif isinstance(data, str):
         yield f'("{data}")'
-    elif is_sequence(data):
+    elif is_sequence(data, object):
         yield "["
 
         for item in data:
@@ -149,8 +181,8 @@ def data2str(data: object) -> Generator[str, None, None]:
 
 
 def container_at_path(
-    data: MutableMapping[object, object], path: str
-) -> tuple[MutableMapping[object, object], str]:
+    data: MutableMapping[str, object], path: str
+) -> tuple[MutableMapping[str, object], str]:
     """
     Get a container at the path.
 
@@ -165,7 +197,7 @@ def container_at_path(
     last element of the :xarg:`path` is considered as a key for further
     manipulation with the container later when needed and as such it is then
     returned together with the container to be processed by a user. If the
-    container does not exist alongside :xarg:`path` it is created. If
+    container does not exist alongside :xarg:`path`, it is created. If
     :xarg:`path` cannot be fully traversed, e.g. because some location is
     occupied by object with wrong data type, an exception is raised.
     """
@@ -180,8 +212,11 @@ def container_at_path(
         if part not in container:
             container[part] = {}
         item = container[part]
-        if not is_mutable_mapping(item):
-            raise TypeError(f"{DATAPATH_SEP.join(visited)}: Not a mapping")
+        if not is_mutable_mapping(item, str, object):
+            raise TypeError(
+                f"{DATAPATH_SEP.join(visited)} is not a mapping from `str` to"
+                " `object`"
+            )
         container = item
     return (container, key)
 
@@ -195,14 +230,14 @@ class RemoveMarker:
 
 
 def mergeinsert(
-    container: MutableMapping[object, object], item: object, key: object
+    container: MutableMapping[str, object], item: object, key: str
 ) -> None:
     """
     Insert, remove, or merge an item into the container.
 
     :param container: The container
     :param item: The item
-    :param key: The key under which the item is stored into or removed from the
+    :param key: The key under which the item is stored in or removed from the
         container
 
     If the item is :class:`.RemoveMarker`, the item that is stored under the
@@ -214,18 +249,16 @@ def mergeinsert(
     if item is RemoveMarker:
         if key in container:
             del container[key]
-    elif key in container and is_mapping(item):
+    elif key in container and is_mapping(item, str, object):
         value = container[key]
-        if is_mutable_mapping(value):
+        if is_mutable_mapping(value, str, object):
             for ikey in item:
                 mergeinsert(value, item[ikey], ikey)
     else:
         container[key] = item
 
 
-def log_diff(
-    recent: Mapping[object, object], old: Mapping[object, object]
-) -> None:
+def log_diff(recent: Mapping[str, object], old: Mapping[str, object]) -> None:
     """
     Log the difference between the recent and old metadata.
 
@@ -247,7 +280,7 @@ def log_diff(
             logger.info("METADATA: `%s` removed", key)
 
 
-def resolve_path(path: "StrPath") -> pathlib.Path:
+def resolve_path(path: StrPath) -> pathlib.Path:
     """
     Resolve :xarg:`path`.
 
@@ -271,7 +304,7 @@ def relative_path(path: pathlib.Path) -> pathlib.Path:
 
 def __build_file_map(
     files: Iterable[pathlib.Path],
-) -> Mapping[str, os.PathLike[str]]:
+) -> Mapping[str, pathlib.Path]:
     """
     Build the file map from a file list.
 
@@ -281,7 +314,7 @@ def __build_file_map(
 
     A file map is a mapping between the name of a file and its path.
     """
-    file_map: MutableMapping[str, os.PathLike[str]] = {}
+    file_map: MutableMapping[str, pathlib.Path] = {}
 
     for item in files:
         name = item.stem
@@ -346,7 +379,7 @@ def get_metadata_from_pkg(session: Session, package: str) -> object:
     :param session: The Nox session
     :param package: The name of the package
     :return: the metadata as a JSON object
-    :raises ValueError: when the attempt to get metadata has failed
+    :raises ValueError: when the attempt to get the metadata has failed
 
     Extract metadata from the package installed in the Python virtual
     environment.

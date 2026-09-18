@@ -8,24 +8,24 @@
 #
 """Decorators."""
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable, Sequence
 from typing import (
-    TYPE_CHECKING,
+    Callable,
     Generator,
     Literal,
+    TypedDict,
     TypeGuard,
-    TypeVar,
+    TypeIs,
     Unpack,
 )
 
+from nox._typing import Python
 from nox.registry import session_decorator
 
 from vutils.nox.command import (
     KW_ACTIONS,
     KW_CACHEDIR,
-    KW_CONF,
     KW_CONFIG,
-    KW_DEPS,
     KW_DESCRIPTION,
     KW_ENVNAME,
     KW_INSTALL_MODE,
@@ -33,26 +33,34 @@ from vutils.nox.command import (
     KW_PACKAGE,
     KW_STATEFILE,
     Command,
+    CommandArgs,
+    CommandArgsBase,
+    CommandArgsOnlyKey,
+    CommonArgs,
+    CommonArgsKey,
 )
 from vutils.nox.pkgspec import DistKind, LocalDist, Security
 from vutils.nox.project import project_dependencies
+from vutils.nox.state import KW_CONF, KW_DEPS
 from vutils.nox.utils import DIST_DIR_NAME, KW_PYTHON, container_at_path
 
-if TYPE_CHECKING:
-    from vutils.nox.typing import (
-        AddArgs,
-        CommandArgs,
-        CommandArgsKey,
-        CommandArgsOnlyKey,
-        CommandDecoratorType,
-        CommonArgsKey,
-        MatrixArgs,
-        SessionArgs,
-        SessionArgsKey,
-        SessionArgsOnlyKey,
-    )
-
-T = TypeVar("T", "CommandArgs", "SessionArgs")
+#: Type aliases
+type SessionArgsOnlyKey = Literal[
+    "python",
+    "py",
+    "reuse_venv",
+    "venv_backend",
+    "venv_params",
+    "tags",
+    "default",
+    "requires",
+]
+type SessionArgsKey = CommonArgsKey | SessionArgsOnlyKey
+type MatrixCommandArgsKey = Literal[
+    "name", "description", "envname", "actions"
+]
+type MatrixSessionArgsKey = Literal["name", "python", "tags", "requires"]
+type CommandDecoratorType = Callable[[type[Command]], type[Command]]
 
 #: Keys and parameters names
 KW_DEFAULT: Literal["default"] = "default"
@@ -92,8 +100,51 @@ SESSION_ONLY_KWARGS = (
     KW_REQUIRES,
 )
 
+#: Key-value arguments shared between a test matrix and
+#: :class:`vutils.nox.command.Command`
+MATRIX_COMMAND_KWARGS = (KW_NAME, KW_DESCRIPTION, KW_ENVNAME, KW_ACTIONS)
+
+#: Key-value arguments shared between a test matrix and
+#: :class:`nox.sessions.Session`
+MATRIX_SESSION_KWARGS = (KW_NAME, KW_PYTHON, KW_TAGS, KW_REQUIRES)
+
 #: Special dependencies names
 FROM_PYPROJECT = "pyproject"
+
+
+class SessionArgsBase(TypedDict, total=False):
+    """Session arguments base."""
+
+    python: Python
+    py: Python
+    reuse_venv: bool
+    venv_backend: str
+    venv_params: Sequence[str]
+    tags: Sequence[str]
+    default: bool
+    requires: Sequence[str]
+
+
+class SessionArgs(CommonArgs, SessionArgsBase, total=False):
+    """Session arguments."""
+
+
+class MatrixArgs(TypedDict, total=False):
+    """Test matrix arguments."""
+
+    name: str
+    description: str
+    envname: str
+    actions: Sequence[str]
+    python: str
+    tags: Sequence[str]
+    requires: Sequence[str]
+
+
+class AddArgs(CommonArgs, CommandArgsBase, SessionArgsBase, total=False):
+    """Arguments of :deco:`.add`."""
+
+    matrix: Iterable[MatrixArgs]
 
 
 def __ensure_defs(cls: type[Command]) -> None:
@@ -116,7 +167,7 @@ def __ensure_defs(cls: type[Command]) -> None:
         origin = bases.pop()
 
 
-def __is_common_kwarg(kwarg: str) -> TypeGuard["CommonArgsKey"]:
+def __is_common_kwarg(kwarg: str) -> TypeGuard[CommonArgsKey]:
     """
     Check whether the key-value argument is a common one.
 
@@ -127,7 +178,7 @@ def __is_common_kwarg(kwarg: str) -> TypeGuard["CommonArgsKey"]:
     return kwarg in COMMON_KWARGS
 
 
-def __is_command_only_kwarg(kwarg: str) -> TypeGuard["CommandArgsOnlyKey"]:
+def __is_command_only_kwarg(kwarg: str) -> TypeGuard[CommandArgsOnlyKey]:
     """
     Check whether the key-value argument is a command-only one.
 
@@ -138,7 +189,7 @@ def __is_command_only_kwarg(kwarg: str) -> TypeGuard["CommandArgsOnlyKey"]:
     return kwarg in COMMAND_ONLY_KWARGS
 
 
-def __is_session_only_kwarg(kwarg: str) -> TypeGuard["SessionArgsOnlyKey"]:
+def __is_session_only_kwarg(kwarg: str) -> TypeGuard[SessionArgsOnlyKey]:
     """
     Check whether the key-value argument is a session-only one.
 
@@ -149,11 +200,11 @@ def __is_session_only_kwarg(kwarg: str) -> TypeGuard["SessionArgsOnlyKey"]:
     return kwarg in SESSION_ONLY_KWARGS
 
 
-def __split_kwargs(kwargs: "AddArgs") -> tuple["CommandArgs", "SessionArgs"]:
+def __split_kwargs(kwargs: AddArgs) -> tuple[CommandArgs, SessionArgs]:
     """
     Split key-value arguments into session and command ones.
 
-    :param kwargs: Key-value arguments coming from :deco:`.add`
+    :param kwargs: The key-value arguments coming from :deco:`.add`
     :return: the pair of key-value arguments for
         :class:`~vutils.nox.command.Command` and :class:`nox.sessions.Session`
         made from :xarg:`kwargs`
@@ -175,66 +226,80 @@ def __split_kwargs(kwargs: "AddArgs") -> tuple["CommandArgs", "SessionArgs"]:
     return (command_kwargs, session_kwargs)
 
 
-def __is_command_kwarg(kwarg: str) -> TypeGuard["CommandArgsKey"]:
+def __is_matrix_command_kwarg(kwarg: str) -> TypeGuard[MatrixCommandArgsKey]:
     """
-    Check whether the key-value argument is a command one.
+    Check whether the key-value argument is a command and test matrix one.
 
     :param kwarg: The key-value argument name
-    :return: :obj:`True` if the key-value argument is a
-        :class:`~vutils.nox.command.Command` key-value argument
+    :return: :obj:`True` if the key-value argument is a both
+        :class:`.MatrixArgs` and :class:`~vutils.nox.command.Command` key-value
+        argument
     """
-    return kwarg in COMMON_KWARGS or kwarg in COMMAND_ONLY_KWARGS
+    return kwarg in MATRIX_COMMAND_KWARGS
 
 
-def __is_session_kwarg(kwarg: str) -> TypeGuard["SessionArgsKey"]:
+def __is_matrix_session_kwarg(kwarg: str) -> TypeGuard[MatrixSessionArgsKey]:
     """
-    Check whether the key-value argument is a session one.
+    Check whether the key-value argument is a session and test matrix one.
 
     :param kwarg: The key-value argument name
-    :return: :obj:`True` if the key-value argument is a
-        :class:`nox.sessions.Session` key-value argument
+    :return: :obj:`True` if the key-value argument is a both
+        :class:`.MatrixArgs` and :class:`nox.sessions.Session` key-value
+        argument
     """
-    return kwarg in COMMON_KWARGS or kwarg in SESSION_ONLY_KWARGS
+    return kwarg in MATRIX_SESSION_KWARGS
 
 
 def __is_command_kwargs(
-    unused_kwargs: T, keys: Iterable[str]
-) -> TypeGuard["CommandArgs"]:
+    kwargs: CommandArgs | SessionArgs,
+    keys: Iterable[CommonArgsKey | CommandArgsOnlyKey | SessionArgsOnlyKey],
+) -> TypeIs[CommandArgs]:
     """
     Check whether key-value arguments are command key-value arguments.
 
-    :param unused_kwargs: Key-value arguments
-    :param keys: Keys
+    :param kwargs: The key-value arguments
+    :param keys: The expected keys
     :return: :obj:`True` if :xarg:`keys` are valid keys of key-value arguments
         of :class:`~vutils.nox.command.Command`
 
     Helps to narrow key-value arguments to the specified type.
     """
-    return set(keys).issubset(set(COMMON_KWARGS) | set(COMMAND_ONLY_KWARGS))
+    return (set(kwargs.keys()) | set(keys)).issubset(
+        set(COMMON_KWARGS) | set(COMMAND_ONLY_KWARGS)
+    )
 
 
 def __is_session_kwargs(
-    unused_kwargs: T, keys: Iterable[str]
-) -> TypeGuard["SessionArgs"]:
+    kwargs: CommandArgs | SessionArgs,
+    keys: Iterable[CommonArgsKey | CommandArgsOnlyKey | SessionArgsOnlyKey],
+) -> TypeIs[SessionArgs]:
     """
     Check whether key-value arguments are session key-value arguments.
 
-    :param unused_kwargs: Key-value arguments
-    :param keys: Keys
+    :param kwargs: The key-value arguments
+    :param keys: The expected keys
     :return: :obj:`True` if :xarg:`keys` are valid keys of key-value arguments
         of :class:`nox.sessions.Session`
 
     Helps to narrow key-value arguments to the specified type.
     """
-    return set(keys).issubset(set(COMMON_KWARGS) | set(SESSION_ONLY_KWARGS))
+    return (set(kwargs.keys()) | set(keys)).issubset(
+        set(COMMON_KWARGS) | set(SESSION_ONLY_KWARGS)
+    )
 
 
-def __combine(kwargs: T, other: "MatrixArgs", allowed: Iterable[str]) -> T:
+def __combine[T: (CommandArgs, SessionArgs)](
+    kwargs: T,
+    other: MatrixArgs,
+    allowed: Collection[
+        CommonArgsKey | CommandArgsOnlyKey | SessionArgsOnlyKey
+    ],
+) -> T:
     """
     Combine :xarg:`kwargs` with :xarg:`other`.
 
-    :param kwargs: Key-value arguments
-    :param other: Other key-value arguments
+    :param kwargs: The key-value arguments
+    :param other: The other key-value arguments
     :param allowed: The list of names of allowed key-value arguments
     :return: the copy of :xarg:`kwargs` merged with :xarg:`other`
     :raises ValueError: when a key-value argument from :xarg:`other` is already
@@ -249,11 +314,11 @@ def __combine(kwargs: T, other: "MatrixArgs", allowed: Iterable[str]) -> T:
             raise ValueError(f"`{key}` is already specified")
         if key not in COMMON_KWARGS and key not in allowed:
             continue
-        if __is_command_kwarg(key) and __is_command_kwargs(
+        if __is_matrix_command_kwarg(key) and __is_command_kwargs(
             new_kwargs, allowed
         ):
             new_kwargs[key] = other[key]
-        elif __is_session_kwarg(key) and __is_session_kwargs(
+        elif __is_matrix_session_kwarg(key) and __is_session_kwargs(
             new_kwargs, allowed
         ):
             new_kwargs[key] = other[key]
@@ -262,7 +327,7 @@ def __combine(kwargs: T, other: "MatrixArgs", allowed: Iterable[str]) -> T:
     return new_kwargs
 
 
-def add(**kwargs: Unpack["AddArgs"]) -> "CommandDecoratorType":
+def add(**kwargs: Unpack[AddArgs]) -> CommandDecoratorType:
     """
     Create a decorator that adds the command to the Nox session registry.
 
@@ -350,14 +415,14 @@ def add(**kwargs: Unpack["AddArgs"]) -> "CommandDecoratorType":
     return decorator
 
 
-def __add(command: type[Command], **kwargs: Unpack["AddArgs"]) -> None:
+def __add(command: type[Command], **kwargs: Unpack[AddArgs]) -> None:
     """
     Add a command to the Nox session registry.
 
     :param command: The :class:`~vutils.nox.command.Command`-based class
     :param kwargs: Key-value arguments
     """
-    matrix = kwargs.pop(KW_MATRIX, ({},))
+    matrix: Iterable[MatrixArgs] = kwargs.pop(KW_MATRIX, ({},))
     command_kwargs, session_kwargs = __split_kwargs(kwargs)
 
     for row in matrix:
