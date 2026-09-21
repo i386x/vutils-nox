@@ -187,8 +187,8 @@ class CommandOptions(TypedDict, total=False):
     install_mode: InstallMode
 
 
-class CommandPropsBase(CommandOptions, total=False):
-    """Command properties base."""
+class CommandPropsAndArgs(CommandOptions, total=False):
+    """Command properties that are also command arguments."""
 
     description: str
     envname: str
@@ -197,7 +197,7 @@ class CommandPropsBase(CommandOptions, total=False):
     config: str | None
 
 
-class CommandProps(CommonArgs, CommandPropsBase, total=False):
+class CommandProps(CommonArgs, CommandPropsAndArgs, total=False):
     """Command properties."""
 
 
@@ -277,14 +277,14 @@ class CommandOptsParser(optparse.OptionParser):
         raise optparse.OptParseError(f"{self.get_prog_name()}: {msg}")
 
 
-class CommandArgsBase(CommandPropsBase, total=False):
-    """Command arguments base."""
+class CommandArgsOnly(CommandPropsAndArgs, total=False):
+    """Command-only arguments."""
 
     actions: Iterable[ActionType | str]
     statefile: str
 
 
-class CommandArgs(CommonArgs, CommandArgsBase, total=False):
+class CommandArgs(CommonArgs, CommandArgsOnly, total=False):
     """Command arguments."""
 
 

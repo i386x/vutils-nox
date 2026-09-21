@@ -34,7 +34,7 @@ from vutils.nox.command import (
     KW_STATEFILE,
     Command,
     CommandArgs,
-    CommandArgsBase,
+    CommandArgsOnly,
     CommandArgsOnlyKey,
     CommonArgs,
     CommonArgsKey,
@@ -56,10 +56,16 @@ type SessionArgsOnlyKey = Literal[
     "requires",
 ]
 type SessionArgsKey = CommonArgsKey | SessionArgsOnlyKey
+type CommandSessionAllArgsKey = (
+    CommonArgsKey | CommandArgsOnlyKey | SessionArgsOnlyKey
+)
 type MatrixCommandArgsKey = Literal[
     "name", "description", "envname", "actions"
 ]
 type MatrixSessionArgsKey = Literal["name", "python", "tags", "requires"]
+type MatrixArgsKey = Literal[
+    "name", "description", "envname", "actions", "python", "tags", "requires"
+]
 type CommandDecoratorType = Callable[[type[Command]], type[Command]]
 
 #: Keys and parameters names
@@ -112,8 +118,8 @@ MATRIX_SESSION_KWARGS = (KW_NAME, KW_PYTHON, KW_TAGS, KW_REQUIRES)
 FROM_PYPROJECT = "pyproject"
 
 
-class SessionArgsBase(TypedDict, total=False):
-    """Session arguments base."""
+class SessionArgsOnly(TypedDict, total=False):
+    """Session-only arguments."""
 
     python: Python
     py: Python
@@ -125,7 +131,7 @@ class SessionArgsBase(TypedDict, total=False):
     requires: Sequence[str]
 
 
-class SessionArgs(CommonArgs, SessionArgsBase, total=False):
+class SessionArgs(CommonArgs, SessionArgsOnly, total=False):
     """Session arguments."""
 
 
@@ -141,7 +147,13 @@ class MatrixArgs(TypedDict, total=False):
     requires: Sequence[str]
 
 
-class AddArgs(CommonArgs, CommandArgsBase, SessionArgsBase, total=False):
+class CommandSessionAllArgs(
+    CommonArgs, CommandArgsOnly, SessionArgsOnly, total=False
+):
+    """All command and session arguments."""
+
+
+class AddArgs(CommandSessionAllArgs, total=False):
     """Arguments of :deco:`.add`."""
 
     matrix: Iterable[MatrixArgs]
@@ -200,7 +212,9 @@ def __is_session_only_kwarg(kwarg: str) -> TypeGuard[SessionArgsOnlyKey]:
     return kwarg in SESSION_ONLY_KWARGS
 
 
-def __split_kwargs(kwargs: AddArgs) -> tuple[CommandArgs, SessionArgs]:
+def __split_kwargs(
+    kwargs: CommandSessionAllArgs
+) -> tuple[CommandArgs, SessionArgs]:
     """
     Split key-value arguments into session and command ones.
 
@@ -251,8 +265,7 @@ def __is_matrix_session_kwarg(kwarg: str) -> TypeGuard[MatrixSessionArgsKey]:
 
 
 def __is_command_kwargs(
-    kwargs: CommandArgs | SessionArgs,
-    keys: Iterable[CommonArgsKey | CommandArgsOnlyKey | SessionArgsOnlyKey],
+    kwargs: CommandArgs | SessionArgs, keys: Iterable[CommandSessionAllArgsKey]
 ) -> TypeIs[CommandArgs]:
     """
     Check whether key-value arguments are command key-value arguments.
@@ -270,8 +283,7 @@ def __is_command_kwargs(
 
 
 def __is_session_kwargs(
-    kwargs: CommandArgs | SessionArgs,
-    keys: Iterable[CommonArgsKey | CommandArgsOnlyKey | SessionArgsOnlyKey],
+    kwargs: CommandArgs | SessionArgs, keys: Iterable[CommandSessionAllArgsKey]
 ) -> TypeIs[SessionArgs]:
     """
     Check whether key-value arguments are session key-value arguments.
@@ -289,11 +301,7 @@ def __is_session_kwargs(
 
 
 def __combine[T: (CommandArgs, SessionArgs)](
-    kwargs: T,
-    other: MatrixArgs,
-    allowed: Collection[
-        CommonArgsKey | CommandArgsOnlyKey | SessionArgsOnlyKey
-    ],
+    kwargs: T, other: MatrixArgs, allowed: Collection[CommandSessionAllArgsKey]
 ) -> T:
     """
     Combine :xarg:`kwargs` with :xarg:`other`.
@@ -422,7 +430,8 @@ def __add(command: type[Command], **kwargs: Unpack[AddArgs]) -> None:
     :param command: The :class:`~vutils.nox.command.Command`-based class
     :param kwargs: Key-value arguments
     """
-    matrix: Iterable[MatrixArgs] = kwargs.pop(KW_MATRIX, ({},))
+    empty: MatrixArgs = {}
+    matrix = kwargs.pop(KW_MATRIX, (empty,))
     command_kwargs, session_kwargs = __split_kwargs(kwargs)
 
     for row in matrix:

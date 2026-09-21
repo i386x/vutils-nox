@@ -10,11 +10,12 @@
 
 import functools
 import re
+import sys
 from collections.abc import Sequence
 from typing import Callable
 
 from mypy.checker import TypeChecker
-from mypy.nodes import ARG_STAR, ARG_STAR2
+from mypy.nodes import ARG_STAR, ARG_STAR2, TypeAlias
 from mypy.plugin import (
     AnalyzeTypeContext,
     FunctionContext,
@@ -30,6 +31,7 @@ from mypy.types import (
     Instance,
     LiteralType,
     Type,
+    TypeAliasType,
     TypeVarLikeType,
     TypeVarType,
     UnionType,
@@ -82,6 +84,7 @@ BUILTINS_T2_TV = "builtins._T2"
 SUPPORTS_RICH_COMPARISON_TV = "_typeshed.SupportsRichComparisonT"
 
 #: Names of type aliases
+INSPECT_INTROSPECTABLE_CALLABLE_TA = "inspect._IntrospectableCallable"
 SUPPORTS_RICH_COMPARISON_TA = "_typeshed.SupportsRichComparison"
 
 #: Names of protocols
@@ -94,6 +97,8 @@ BUILTINS_MAX = "builtins.max"
 BUILTINS_MIN = "builtins.min"
 BUILTINS_MIN_MAX_RE = re.compile(r"^builtins\.(?:min|max)(#\d+)?$")
 EMAIL_HEADER_DECODE_HEADER = "email.header.decode_header"
+INSPECT_SIGNATURE = "inspect.signature"
+NOX_REGISTRY_SESSION_DECORATOR = "nox.registry.session_decorator"
 RANDOM_SHUFFLE = "random.shuffle"
 
 
@@ -450,6 +455,87 @@ def adjust_random_shuffle(ctx: FunctionSigContext) -> FunctionLike:
     return verify_type(result, CallableType)
 
 
+def adjust_inspect_signature(ctx: FunctionSigContext) -> FunctionLike:
+    """
+    Adjust the signature of :func:`inspect.signature`.
+
+    :param ctx: The function signature context
+    :return: the adjusted function signature
+    :raises TypeError: when the adjusted function signature is not an instance
+        of :class:`mypy.types.CallableType`
+
+    In ``def signature(obj: Callable[..., Any], *, ...) -> Signature: ...``,
+    replace ``Callable[..., Any]``, previously replaced by ``def (*object,
+    **object) -> object``, with the type (that must be a callable) deduced from
+    the first argument that was passed to :func:`inspect.signature`.
+    """
+    args = ctx.args
+    sig = ctx.default_signature
+    api = ctx.api
+    if len(args) == 0 or len(args[0]) == 0:
+        return sig
+    tt = get_proper_type(api.get_expression_type(args[0][0]))
+    if isinstance(tt, UnionType):
+        for item in tt.items:
+            if not isinstance(item, CallableType):
+                return sig
+    elif not isinstance(tt, CallableType):
+        return sig
+    arg = Arg()
+    xargs = [arg, arg, arg, arg]
+    if sys.version_info >= (3, 14):
+        xargs.append(arg)
+
+    def replace(
+        unused_tt: TypeAliasType,
+        unused_alias: TypeAlias | None,
+        unused_args: Sequence[Type],
+    ) -> Type:
+        """
+        Replace a type alias type with the deduced proper callable type.
+
+        :param unused_tt: The type alias type
+        :param unused_alias: The type alias
+        :param unused_args: The arguments of type alias type
+        :return: the deduced proper type that replaces :xarg:`unused_tt`
+        """
+        return tt
+
+    ta = type_alias(
+        INSPECT_INTROSPECTABLE_CALLABLE_TA,
+        universal_callable_t(ret_type=object_t()),
+        action=replace,
+    )
+    result = callable_t(Arg(typ=ta), *xargs).try_match(sig)
+    if isinstance(result, TypeMatchError):
+        return sig
+    return verify_type(result, CallableType)
+
+
+def adjust_nox_registry_session_decorator(
+    ctx: FunctionSigContext
+) -> FunctionLike:
+    """
+    Adjust the signature of :func:`nox.registry.session_decorator`.
+
+    :param ctx: The function signature context
+    :return: the adjusted function signature
+    :raises TypeError: when the adjusted function signature is not an instance
+        of :class:`mypy.types.CallableType`
+    """
+    sig = ctx.default_signature
+    rt = sig.ret_type
+
+    func_t = instance_t(NOX_DECORATORS_FUNC)
+    raw_func_ta = type_alias(
+        NOX_REGISTRY_RAWFUNC_TA, universal_callable_t(ret_type=object_t()),
+    )
+
+    callable_t(Arg(typ=raw_func_ta | func_t), ret_type=func_t)
+
+    return sig
+
+
 def adjust_universal_callable_in_decorator(ctx: FunctionContext) -> Type:
     """
     Adjust ``Callable[[*object, **object], T]`` to ``Callable[P, T]``.
@@ -645,6 +731,10 @@ class LiftAnyPlugin(Plugin):
             BUILTINS_MIN: adjust_builtins_min_max,
             BUILTINS_MAX: adjust_builtins_min_max,
             RANDOM_SHUFFLE: adjust_random_shuffle,
+            INSPECT_SIGNATURE: adjust_inspect_signature,
+            NOX_REGISTRY_SESSION_DECORATOR: (
+                adjust_nox_registry_session_decorator
+            ),
         }.get(fullname)
 
     def get_function_hook(

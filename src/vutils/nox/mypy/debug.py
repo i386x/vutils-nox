@@ -24,6 +24,7 @@ from mypy.types import (
     AnyType,
     CallableType,
     Instance,
+    LiteralType,
     NoneType,
     ParamSpecType,
     TupleType,
@@ -178,10 +179,7 @@ class Visited:
 
 
 def print_typeparam(
-    tp: TypeParam,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    tp: TypeParam, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a type parameter.
@@ -214,10 +212,7 @@ def print_typeparam(
 
 
 def print_funcdef_node(
-    node: FuncDef,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    node: FuncDef, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.nodes.FuncDef` node.
@@ -247,10 +242,7 @@ def print_funcdef_node(
 
 
 def print_decorator_node(
-    node: Decorator,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    node: Decorator, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.nodes.Decorator` node.
@@ -275,10 +267,7 @@ def print_decorator_node(
 
 
 def print_var_node(
-    node: Var,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    node: Var, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.nodes.Var` node.
@@ -319,10 +308,7 @@ def print_name_expr_node(
 
 
 def print_typealias_node(
-    node: TypeAlias,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    node: TypeAlias, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.nodes.TypeAlias` node.
@@ -387,10 +373,7 @@ def print_node(
 
 
 def print_typealias_type(
-    t: TypeAliasType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: TypeAliasType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.TypeAliasType` type.
@@ -435,10 +418,7 @@ def show_typevarid(tvid: TypeVarId) -> str:
 
 
 def print_typevar_type(
-    t: TypeVarType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: TypeVarType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.TypeVarType` type.
@@ -469,10 +449,7 @@ def print_typevar_type(
 
 
 def print_paramspec_type(
-    t: ParamSpecType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: ParamSpecType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.ParamSpecType` type.
@@ -500,10 +477,7 @@ def print_paramspec_type(
 
 
 def print_any_type(
-    t: AnyType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: AnyType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.AnyType` type.
@@ -529,10 +503,7 @@ def print_any_type(
 
 
 def print_none_type(
-    t: NoneType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: NoneType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.NoneType` type.
@@ -551,10 +522,7 @@ def print_none_type(
 
 
 def print_instance_type(
-    t: Instance,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: Instance, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.Instance` type.
@@ -587,10 +555,7 @@ def print_instance_type(
 
 
 def print_callable_type(
-    t: CallableType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: CallableType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.CallableType` type.
@@ -652,10 +617,7 @@ def print_callable_type(
 
 
 def print_tuple_type(
-    t: TupleType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: TupleType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.TupleType` type.
@@ -680,11 +642,30 @@ def print_tuple_type(
     print(f"{pad}{RBRACE}{trailer}")
 
 
+def print_literal_type(
+    t: LiteralType, visited: Visited, indent: int = 0, trailer: str = ""
+) -> None:
+    """
+    Print a :class:`mypy.types.LiteralType` type.
+
+    :param t: The type
+    :param visited: The registry tracking visited objects
+    :param indent: The indentation level
+    :param trailer: The trailing characters to be printed
+    """
+    pad = INDENTATION_BLOCK * indent
+    print(f"{pad}LiteralType {LBRACE}")
+    print(f"{pad}  __id__: #{visited.get(t)},")
+    print(f"{pad}  value: {t.value},")
+    print(f"{pad}  fallback:")
+    print_type(t.fallback, visited, indent + 2)
+    print(f"{pad}  line: {t.line},")
+    print(f"{pad}  column: {t.column},")
+    print(f"{pad}{RBRACE}{trailer}")
+
+
 def print_union_type(
-    t: UnionType,
-    visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    t: UnionType, visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.types.UnionType` type.
@@ -711,10 +692,7 @@ def print_union_type(
 
 
 def print_type(
-    t: Type,
-    visited: Visited | None = None,
-    indent: int = 0,
-    trailer: str = "",
+    t: Type, visited: Visited | None = None, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a type.
@@ -753,6 +731,8 @@ def print_type(
         print_callable_type(t, visited, indent, trailer)
     elif isinstance(t, TupleType):
         print_tuple_type(t, visited, indent, trailer)
+    elif isinstance(t, LiteralType):
+        print_literal_type(t, visited, indent, trailer)
     elif isinstance(t, UnionType):
         print_union_type(t, visited, indent, trailer)
     else:

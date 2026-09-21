@@ -922,16 +922,20 @@ def callable_t(
 
 @fix_decorator_type(functools.cache)
 def universal_callable_t(
+    ret_type: Pattern[Type] | None = None,
     action: OnCallable | None = None,
 ) -> CallableTypePattern:
     """
     Create a pattern for ``Callable[[*object, **object], T]``.
 
+    :param ret_type: The pattern for the return type ``T``
     :param action: The action to be invoked on a successful match
     :return: the pattern for ``Callable[[*object, **object], T]``
     """
     obj_t = object_t()
-    return callable_t(pargs(obj_t), kargs(obj_t), action=action)
+    return callable_t(
+        pargs(obj_t), kargs(obj_t), ret_type=ret_type, action=action
+    )
 
 
 @fix_decorator_type(functools.cache)
