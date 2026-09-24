@@ -25,13 +25,8 @@ from mypy.types import (
     UnionType,
 )
 
-from vutils.nox.mypy.typing import fix_decorator_type
-from vutils.nox.mypy.utils import (
-    BOOL_TYPE,
-    LIST_TYPE,
-    OBJECT_TYPE,
-    verify_type,
-)
+from vutils.nox.mypy.typing import fix_decorator_type, verify_type
+from vutils.nox.mypy.utils import BOOL_TYPE, LIST_TYPE, OBJECT_TYPE
 
 #: Type aliases
 type OnInstance = Callable[

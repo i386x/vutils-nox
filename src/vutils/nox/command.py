@@ -30,7 +30,7 @@ from nox.registry import get
 from nox.sessions import Session
 from setuptools import find_namespace_packages, find_packages
 
-from vutils.nox.mypy.typing import fix_decorator_type
+from vutils.nox.mypy.typing import fix_decorator_type, verify_type
 from vutils.nox.pkgspec import InstallMode
 from vutils.nox.project import get_where, load_pyproject
 from vutils.nox.state import (
@@ -41,6 +41,8 @@ from vutils.nox.state import (
     ConfType,
     Dependencies,
     DepsType,
+    MutConfType,
+    MutDepsType,
 )
 from vutils.nox.utils import identical
 
@@ -291,8 +293,8 @@ class CommandArgs(CommonArgs, CommandArgsOnly, total=False):
 class CommandDefs(TypedDict):
     """Command definitions."""
 
-    deps: DepsType
-    conf: ConfType
+    deps: MutDepsType
+    conf: MutConfType
 
 
 class Command:
@@ -425,10 +427,7 @@ class Command:
         else:
             # Mypy claims the type is `Callable[[Command], str]` instead of
             # `str` so we need to narrow it
-            name_obj: object = type(self).__name__
-            if not isinstance(name_obj, str):
-                raise TypeError("`Command.__name__` is not string")
-            name = name_obj.lower()
+            name = verify_type(type(self).__name__, str).lower()
             desc = type(self).__doc__
         props.setdefault(KW_NAME, name)
         props.setdefault(KW_DESCRIPTION, desc or "<no description>")

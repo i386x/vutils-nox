@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from typing import Callable
 
 from mypy.checker import TypeChecker
-from mypy.nodes import ARG_STAR, ARG_STAR2, TypeAlias
+from mypy.nodes import ARG_POS, ARG_STAR, ARG_STAR2, TypeAlias
 from mypy.plugin import (
     AnalyzeTypeContext,
     FunctionContext,
@@ -30,6 +30,7 @@ from mypy.types import (
     FunctionLike,
     Instance,
     LiteralType,
+    NoneType,
     Type,
     TypeAliasType,
     TypeVarLikeType,
@@ -60,7 +61,7 @@ from vutils.nox.mypy.tpatt import (
     universal_callable_t,
 )
 from vutils.nox.mypy.transforms import CaptureType, ModifyInstance
-from vutils.nox.mypy.typing import fix_decorator_type
+from vutils.nox.mypy.typing import fix_decorator_type, verify_type
 from vutils.nox.mypy.utils import (
     ANY_TYPE,
     BYTES_TYPE,
@@ -71,10 +72,9 @@ from vutils.nox.mypy.utils import (
     MUTABLE_SEQUENCE_TYPE,
     OBJECT_TYPE,
     STR_TYPE,
-    ParamSpecFactory,
+    TypeVarLikeTypeFactory,
     is_subtype_of,
     new_object,
-    verify_type,
 )
 
 #: Names of type variables
@@ -85,20 +85,27 @@ SUPPORTS_RICH_COMPARISON_TV = "_typeshed.SupportsRichComparisonT"
 
 #: Names of type aliases
 INSPECT_INTROSPECTABLE_CALLABLE_TA = "inspect._IntrospectableCallable"
+NOX_REGISTRY_RAWFUNC_TA = "nox.registry.RawFunc"
 SUPPORTS_RICH_COMPARISON_TA = "_typeshed.SupportsRichComparison"
 
 #: Names of protocols
 SUPPORTS_DUNDER_GT_PROTO = "_typeshed.SupportsDunderGT"
 SUPPORTS_DUNDER_LT_PROTO = "_typeshed.SupportsDunderLT"
 
-#: Names of functions/methods or regular expressions matching them
+#: Names of functions/classes/methods or regular expressions matching them
 BUILTINS_LIST_SORT = "builtins.list.sort"
 BUILTINS_MAX = "builtins.max"
 BUILTINS_MIN = "builtins.min"
 BUILTINS_MIN_MAX_RE = re.compile(r"^builtins\.(?:min|max)(#\d+)?$")
 EMAIL_HEADER_DECODE_HEADER = "email.header.decode_header"
 INSPECT_SIGNATURE = "inspect.signature"
+NOX_DECORATORS_FUNC = "nox._decorators.Func"
 NOX_REGISTRY_SESSION_DECORATOR = "nox.registry.session_decorator"
+# `nox.session.Session` is exported via `nox`, but `nox` does not have
+# `session` between its symbols and thus
+# `ctx.api.named_type("nox.session.Session")` fails; however, `nox.session` is
+# reachable (loaded)
+NOX_SESSIONS_SESSION = "nox.Session"
 RANDOM_SHUFFLE = "random.shuffle"
 
 
@@ -512,30 +519,6 @@ def adjust_inspect_signature(ctx: FunctionSigContext) -> FunctionLike:
     return verify_type(result, CallableType)
 
 
-def adjust_nox_registry_session_decorator(
-    ctx: FunctionSigContext
-) -> FunctionLike:
-    """
-    Adjust the signature of :func:`nox.registry.session_decorator`.
-
-    :param ctx: The function signature context
-    :return: the adjusted function signature
-    :raises TypeError: when the adjusted function signature is not an instance
-        of :class:`mypy.types.CallableType`
-    """
-    sig = ctx.default_signature
-    rt = sig.ret_type
-
-    func_t = instance_t(NOX_DECORATORS_FUNC)
-    raw_func_ta = type_alias(
-        NOX_REGISTRY_RAWFUNC_TA, universal_callable_t(ret_type=object_t()),
-    )
-
-    callable_t(Arg(typ=raw_func_ta | func_t), ret_type=func_t)
-
-    return sig
-
-
 def adjust_universal_callable_in_decorator(ctx: FunctionContext) -> Type:
     """
     Adjust ``Callable[[*object, **object], T]`` to ``Callable[P, T]``.
@@ -544,8 +527,7 @@ def adjust_universal_callable_in_decorator(ctx: FunctionContext) -> Type:
     :return: the adjusted return type for the analyzed function that triggered
         this hook function
     :raises TypeError: when :xarg:`ctx.api` is not an instance of
-        :class:`mypy.checker.TypeChecker` or a pattern over a type is
-        ill-formed
+        :class:`mypy.checker.TypeChecker`
 
     Use this function as a hook to adjust a decorator signature, e.g. in a
     context like ::
@@ -591,21 +573,25 @@ def adjust_universal_callable_in_decorator(ctx: FunctionContext) -> Type:
         return typ
 
     outer = outer_capt.get()
-    psfac = ParamSpecFactory(api, FIX_DECORATOR_TYPE_FUNC, outer.variables)
-    pspec = psfac.get("P")
+    tvfac = TypeVarLikeTypeFactory(
+        api, FIX_DECORATOR_TYPE_FUNC, outer.variables
+    )
+    pspec = tvfac.getp("P")
 
     return outer.copy_modified(
         arg_types=[inner.copy_modified(arg_types=[pspec.args, pspec.kwargs])],
-        variables=psfac.variables,
+        variables=tvfac.variables,
     )
 
 
 def adjust_return_email_header_decode_header(ctx: FunctionContext) -> Type:
     """
-    Adjust :func:`email.header.decode_header` return type.
+    Adjust the return type of :func:`email.header.decode_header`.
 
     :param ctx: The function context
     :return: the adjusted return type of :func:`email.header.decode_header`
+    :raises TypeError: when :xarg:`ctx.api` is not an instance of
+        :class:`mypy.checker.TypeChecker`
 
     The original return type of :func:`email.header.decode_header` is
     ``list[tuple[Any, Any | None]]``, which after replacing :class:`typing.Any`
@@ -652,6 +638,70 @@ def adjust_return_email_header_decode_header(ctx: FunctionContext) -> Type:
 
     result = list_t(
         tuple_t(object_t(to_str_or_bytes), object_t(to_str) | none_t())
+    ).try_match(rt)
+    if isinstance(result, TypeMatchError):
+        return rt
+    return result
+
+
+def adjust_nox_registry_session_decorator(ctx: FunctionContext) -> Type:
+    """
+    Adjust the return type of :func:`nox.registry.session_decorator`.
+
+    :param ctx: The function context
+    :return: the adjusted return type of :func:`nox.registry.session_decorator`
+    :raises TypeError: when :xarg:`ctx.api` is not an instance of
+        :class:`mypy.checker.TypeChecker`
+
+    In ``Callable[[RawFunc | Func], Func]``, replace ``RawFunc | Func`` with
+    ``Callable[[Session], None] | Callable[[Session, object], None]``.
+    """
+    api = verify_type(ctx.api, TypeChecker)
+    rt = ctx.default_return_type
+
+    def modify(
+        t: CallableType,
+        unused_arg_types: Sequence[Type],
+        unused_ret_type: Type,
+        unused_variables: Sequence[TypeVarLikeType],
+    ) -> Type:
+        """
+        Modify a callable.
+
+        :param t: The callable
+        :param unused_arg_types: The list of argument type of the callable
+        :param unused_ret_type: The return type of the callable
+        :param unused_variables: The list of type variables of the callable
+        :return: the modified callable
+        """
+        object_type = api.named_type(OBJECT_TYPE)
+        function_type = api.named_type(FUNCTION_TYPE)
+        session_type = api.named_type(NOX_SESSIONS_SESSION)
+        none_type = NoneType()
+        fa_type = CallableType(
+            [session_type],
+            [ARG_POS],
+            [None],
+            ret_type=none_type,
+            fallback=function_type,
+            is_ellipsis_args=False,
+        )
+        fb_type = CallableType(
+            [session_type, object_type],
+            [ARG_POS, ARG_POS],
+            [None, None],
+            ret_type=none_type,
+            fallback=function_type,
+            is_ellipsis_args=False,
+        )
+        return t.copy_modified(arg_types=[UnionType([fa_type, fb_type])])
+
+    func_t = instance_t(NOX_DECORATORS_FUNC)
+    raw_func_ta = type_alias(
+        NOX_REGISTRY_RAWFUNC_TA, universal_callable_t(ret_type=object_t())
+    )
+    result = callable_t(
+        Arg(typ=raw_func_ta | func_t), ret_type=func_t, action=modify
     ).try_match(rt)
     if isinstance(result, TypeMatchError):
         return rt
@@ -732,9 +782,6 @@ class LiftAnyPlugin(Plugin):
             BUILTINS_MAX: adjust_builtins_min_max,
             RANDOM_SHUFFLE: adjust_random_shuffle,
             INSPECT_SIGNATURE: adjust_inspect_signature,
-            NOX_REGISTRY_SESSION_DECORATOR: (
-                adjust_nox_registry_session_decorator
-            ),
         }.get(fullname)
 
     def get_function_hook(
@@ -752,6 +799,9 @@ class LiftAnyPlugin(Plugin):
             FIX_DECORATOR_TYPE_FUNC: adjust_universal_callable_in_decorator,
             EMAIL_HEADER_DECODE_HEADER: (
                 adjust_return_email_header_decode_header
+            ),
+            NOX_REGISTRY_SESSION_DECORATOR: (
+                adjust_nox_registry_session_decorator
             ),
         }.get(fullname)
 

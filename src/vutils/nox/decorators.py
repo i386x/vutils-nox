@@ -39,7 +39,8 @@ from vutils.nox.command import (
     CommonArgs,
     CommonArgsKey,
 )
-from vutils.nox.pkgspec import DistKind, LocalDist, Security
+from vutils.nox.mypy.typing import verify_type
+from vutils.nox.pkgspec import DistKind, LocalDist, PkgSpecType, Security
 from vutils.nox.project import project_dependencies
 from vutils.nox.state import KW_CONF, KW_DEPS
 from vutils.nox.utils import DIST_DIR_NAME, KW_PYTHON, container_at_path
@@ -153,7 +154,9 @@ class CommandSessionAllArgs(
     """All command and session arguments."""
 
 
-class AddArgs(CommandSessionAllArgs, total=False):
+# We cannot use `CommandSessionAllArgs` as a base because of duplicate bases
+# error
+class AddArgs(CommonArgs, CommandArgsOnly, SessionArgsOnly, total=False):
     """Arguments of :deco:`.add`."""
 
     matrix: Iterable[MatrixArgs]
@@ -213,7 +216,7 @@ def __is_session_only_kwarg(kwarg: str) -> TypeGuard[SessionArgsOnlyKey]:
 
 
 def __split_kwargs(
-    kwargs: CommandSessionAllArgs
+    kwargs: CommandSessionAllArgs,
 ) -> tuple[CommandArgs, SessionArgs]:
     """
     Split key-value arguments into session and command ones.
@@ -339,8 +342,8 @@ def add(**kwargs: Unpack[AddArgs]) -> CommandDecoratorType:
     """
     Create a decorator that adds the command to the Nox session registry.
 
-    :param kwargs: Key-value arguments
-    :return: a decorator function
+    :param kwargs: The key-value arguments
+    :return: the decorator function
 
     Key-value arguments accepted by this function are:
 
@@ -353,11 +356,11 @@ def add(**kwargs: Unpack[AddArgs]) -> CommandDecoratorType:
       package
     * ``cachedir``, specifying the shared cache directory
     * ``config``, specifying the name of the configuration file for the command
-    * ``install_mode``, specifying the installation mode of command's
+    * ``install_mode``, specifying the installation mode of the command's
       dependencies
     * ``statefile``, specifying the name of the file used as the command's
       state persistent storage
-    * ``python``, specifying supported Python interpreter version(s) (see the
+    * ``python``, specifying supported Python interpreter versions (see the
       `Nox documentation`_ for further details)
     * ``py`` is an alias for ``python``
     * ``reuse_venv``, specifying whether the Python virtual environment should
@@ -373,11 +376,11 @@ def add(**kwargs: Unpack[AddArgs]) -> CommandDecoratorType:
     * ``matrix``, specifying a test matrix
 
     A test matrix provides a sequence of dictionaries whose keys are
-    complementary to :xarg:`kwargs`. That is, if both some dictionary from the
-    test matrix and :xarg:`kwargs` have a same key then this is treated as an
-    error. For every dictionary in the test matrix, the dictionary is merged
-    with the rest of :xarg:`kwargs` and the result is passed again to
-    :deco:`.add`. Thus this ::
+    complementary to :xarg:`kwargs`. It is an error if a dictionary from the
+    test matrix contains a key that is also present in :xarg:`kwargs`. For
+    every dictionary in the test matrix, the dictionary is merged with the rest
+    of :xarg:`kwargs` and the result is passed again to :deco:`.add`. Thus
+    this ::
 
         @add(
             matrix=(
@@ -399,9 +402,9 @@ def add(**kwargs: Unpack[AddArgs]) -> CommandDecoratorType:
     * ``name`` (:class:`str`, see the explanation above)
     * ``envname`` (:class:`str`, see the explanation above)
     * ``description`` (:class:`str`, see the explanation above)
-    * ``python`` (:class:`str`, a Python version in ``<major>.<minor>`` format
-      or ``python`` meaning that the same Python interpreter as that under the
-      which Nox were executed is used)
+    * ``python`` (:class:`str`, a Python version in ``<major>.<minor>`` format,
+      or ``"python"``, meaning that the same Python interpreter that was used
+      to run Nox is used)
     * ``actions`` (the list of names of previously :deco:`.add`ed commands)
     * ``tags`` (the list of tags, see the explanation above)
     * ``requires`` (see above)
@@ -428,7 +431,7 @@ def __add(command: type[Command], **kwargs: Unpack[AddArgs]) -> None:
     Add a command to the Nox session registry.
 
     :param command: The :class:`~vutils.nox.command.Command`-based class
-    :param kwargs: Key-value arguments
+    :param kwargs: The key-value arguments
     """
     empty: MatrixArgs = {}
     matrix = kwargs.pop(KW_MATRIX, (empty,))
@@ -440,7 +443,7 @@ def __add(command: type[Command], **kwargs: Unpack[AddArgs]) -> None:
         )(command(**__combine(command_kwargs, row, COMMAND_ONLY_KWARGS)))
 
 
-def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
+def dep(depname: str, spec: str | None = "") -> CommandDecoratorType:
     """
     Create a decorator that adds a dependency to the command.
 
@@ -463,7 +466,8 @@ def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
       loaded from ``pyproject.toml`` from the ``project.dependencies`` field
       and optionally (i.e. if it is present) from the
       ``project.optional-dependencies.<S>`` field, where ``<S>`` is the session
-      class name in lower case. That is, if ``pyproject.toml`` contains
+      (command) class name in lower case. That is, if ``pyproject.toml``
+      contains
 
       .. code-block:: toml
 
@@ -484,10 +488,6 @@ def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
       then the dependencies for ``MyTool`` will be ``linter``, ``foo``, and
       ``bar``.
 
-      Note that when :xarg:`spec` is :obj:`None` then :obj:`None` overrides all
-      specifiers of loaded dependencies, meaning that the dependencies will be
-      removed from the set instead of added.
-
     The dependecy specifier has the following semantics:
 
     * If it is :obj:`None`, the dependency is removed from the set.
@@ -496,7 +496,7 @@ def dep(depname: str, spec: str | None = "") -> "CommandDecoratorType":
       manager decides which version to install). This is mandatory for local
       Python packages. This specifier will not nullify previous specifiers but
       it is rather ignored if there are some.
-    * Otherwise, it must be valid PEP 508 dependency specifier.
+    * Otherwise, it must be a valid PEP 508 dependency specifier.
 
       * If it starts with ``>`` (leading spaces are not considered), the
         dependency is treated as a security update and it is installed in its
@@ -531,7 +531,9 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
         raise ValueError("Dependency name must not be empty")
 
     if depname.startswith("%"):
-        for dep_spec in __dep_special(depname[1:], command.__name__.lower()):
+        for dep_spec in __dep_special(
+            depname[1:], verify_type(command.__name__, str).lower()
+        ):
             __dep(
                 command, dep_spec[0], dep_spec[1] if spec is not None else None
             )
@@ -548,6 +550,7 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
             "Dependency specifier must be either empty string or `None`"
         )
 
+    pkg_spec: PkgSpecType
     if depname == ".":
         pkg_name = "."
         pkg_spec = None if spec is None else LocalDist()
@@ -567,7 +570,7 @@ def __dep_special(
     depname: str, cmdname: str
 ) -> Generator[tuple[str, str], None, None]:
     """
-    Handle the special dependency case.
+    Handle the special dependency cases.
 
     :param depname: The special dependency case name
     :param cmdname: The session command class name in lower case
@@ -584,7 +587,7 @@ def __dep_special(
         raise ValueError(f"Unknown special dependency case name: %{depname}")
 
 
-def cfg(path: str, item: object) -> "CommandDecoratorType":
+def cfg(path: str, item: object) -> CommandDecoratorType:
     """
     Create a decorator that adds a configuration item to the command.
 
@@ -601,7 +604,7 @@ def cfg(path: str, item: object) -> "CommandDecoratorType":
 
         Task.DEFS["conf"]["black"]["line-length"] = 79
 
-    If :xarg:`item` is :class:`~vutils.nox.command.RemoveMarker`, the item on
+    If :xarg:`item` is :class:`~vutils.nox.command.RemoveMarker`, the item at
     :xarg:`path` is deleted.
     """
 

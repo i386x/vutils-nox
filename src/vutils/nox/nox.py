@@ -16,6 +16,7 @@ from nox.sessions import _normalize_path
 
 import vutils.nox.sessions as _
 from vutils.nox.command import Command
+from vutils.nox.mypy.typing import verify_type
 
 
 class SessionRunner(NoxSessionRunner):
@@ -53,7 +54,7 @@ class SessionRunner(NoxSessionRunner):
         :return: the path to the Python environment directory
         """
         return _normalize_path(
-            self.global_config.envdir, self.__resolve_envname()
+            str(self.global_config.envdir), self.__resolve_envname()
         )
 
 
@@ -63,16 +64,15 @@ def patch_nox(old: object, new: object) -> None:
 
     :param old: The old object
     :param new: The new object
+    :raises TypeError: when ``old.__name__`` is not an instance of :class:`str`
 
-    Go throw all imported Nox modules, find all occurrences of :xarg:`old`,
-    based on its ``__name__``, and replace it with :xarg:`new`.
+    Go throw all imported Nox modules, find all occurrences of :xarg:`old`
+    (based on its ``__name__``), and replace it with :xarg:`new`.
     """
+    old_name = verify_type(getattr(old, "__name__", ""), str)
     for name, module in sys.modules.items():
-        if (
-            name.startswith("nox")
-            and getattr(module, old.__name__, None) is old
-        ):
-            setattr(module, old.__name__, new)
+        if name.startswith("nox") and getattr(module, old_name, None) is old:
+            setattr(module, old_name, new)
 
 
 def setup() -> None:

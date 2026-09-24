@@ -10,24 +10,39 @@
 
 import os
 
+#: Useful type aliases
 type StrPath = str | os.PathLike[str]
+
+
+def verify_type[T](obj: object, typ: type[T]) -> T:
+    """
+    Verify that :xarg:`obj` is an instance of :xarg:`typ`.
+
+    :param obj: The object
+    :param typ: The expected type
+    :return: the object
+    :raises TypeError: when :xarg:`obj` is not an instance of :xarg:`typ`
+    """
+    if not isinstance(obj, typ):
+        raise TypeError(f"Expected an instance of {typ!r}")
+    return obj
 
 
 def fix_decorator_type[F](func: F) -> F:
     """
-    Help ``mypy`` plugin to fix a decorator type.
+    Help mypy plugin to fix a decorator type.
 
     :param func: The decorator function
     :return: the decorator function with fixed signature
 
     Some libraries may have decorators annotated as
-    ``Callable[[Callable[..., T]], Wrapper[T]]``, which is expanded by ``mypy``
-    to ``def [T](def (*Any, **Any) -> T) -> Wrapper[T]``, which is adjusted by
+    ``Callable[[Callable[..., T]], Wrapper[T]]``, which is expanded by mypy to
+    ``def [T](def (*Any, **Any) -> T) -> Wrapper[T]``, which is adjusted by
     :mod:`.liftany` plugin to
     ``def [T](def (*object, **object) -> T) -> Wrapper[T]``. However, functions
     like ``def (int, float) -> T`` cannot be passed to places where
     ``def (*object, **object) -> T`` is expected, even when this seems to be
-    correct, due to the ``mypy`` type checking rules. Thus, when
+    correct, due to the mypy type checking rules. Thus, when
     ``def (*object, **object) -> ...`` is detected in a decorator signature it
     is replaced with ``def [**P](*P.args, **P.kwargs) -> ...``; in our case:
     ``def [**P, T](def (*P.args, **P.kwargs) -> T) -> Wrapper[T]`` is the final
@@ -39,7 +54,7 @@ def fix_decorator_type[F](func: F) -> F:
         def sum(x: int, y: int) -> int:
             return x + y
 
-    Using the decorator directly is not enough at this time since ``mypy`` does
-    not trigger ``get_function_signature_hook`` for decorators.
+    Using the decorator directly is not enough at this time since mypy does not
+    trigger ``get_function_signature_hook`` for decorators.
     """
     return func

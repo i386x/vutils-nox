@@ -12,7 +12,7 @@ Predefined sessions, commands, and configurations.
 CI workflow:
 
 * Purge:
-  * create new environment
+  * create a new environment
   * upgrade ``pip`` if necessary
   * remove ``./dist``
 * Build:
@@ -45,7 +45,7 @@ CI workflow:
 Local workflow:
 
 * Purge:
-  * create new environment [pyXY, python]
+  * create a new environment [pyXY, python]
   * upgrade ``pip`` if necessary [pyXY, python]
   * remove ``./dist``
 * Build:
@@ -123,6 +123,9 @@ from vutils.nox.utils import (
     upgrade_pip,
 )
 
+#: Missing configuration file placeholder
+NO_CONFIGURATION = "Configuration.Is.Missing"
+
 #: Run the check subset of linters
 CHECK_TAG = "check"
 #: Run linters, recreate environment tag
@@ -135,7 +138,7 @@ TESTS_TAG = "tests"
 #: :obj:`True` if we are running inside CI
 INSIDE_CI = inside_ci()
 #: All supported Python versions by the project. In CI, this is provided by the
-#: test matrix, defined inside CI, and hence we pass the empty list here
+#: test matrix defined inside CI and hence we pass the empty list here
 ALL_PYTHONS: Iterable[str] = project_pythons() if not INSIDE_CI else []
 
 #: Common configuration constants
@@ -168,9 +171,7 @@ def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str], None, None]:
         yield (pyver, pyver.replace(".", ""))
 
 
-def ci_matrix(
-    **exts: Unpack["MatrixArgs"],
-) -> Generator["MatrixArgs", None, None]:
+def ci_matrix(**exts: Unpack[MatrixArgs]) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for CI.
 
@@ -181,7 +182,7 @@ def ci_matrix(
     Python virtual environments as part of them so we can just use the same
     version of Python that was used to run the Nox.
     """
-    matrix = {KW_ENVNAME: KW_PYTHON, KW_PYTHON: KW_PYTHON}
+    matrix: MatrixArgs = {KW_ENVNAME: KW_PYTHON, KW_PYTHON: KW_PYTHON}
     matrix.update(exts)
     yield matrix
 
@@ -193,13 +194,11 @@ class Dummy(Command):
     __slots__ = ()
 
 
-def purge_matrix(
-    pythons: Iterable[str],
-) -> Generator["MatrixArgs", None, None]:
+def purge_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for :class:`.Purge` command.
 
-    :param pythons: Supported Python versions
+    :param pythons: The supported Python versions
     :return: the test matrix
     """
     for pyver, ver in pyvers(pythons):
@@ -232,13 +231,11 @@ class Purge(Command):
         upgrade_pip(session)
 
 
-def build_matrix(
-    pythons: Iterable[str],
-) -> Generator["MatrixArgs", None, None]:
+def build_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for :class:`.Build` command.
 
-    :param pythons: Supported Python versions
+    :param pythons: The supported Python versions
     :return: the test matrix
     """
     tags = [TESTS_TAG]
@@ -266,13 +263,11 @@ class Build(Command):
         remove_build_artifacts()
 
 
-def pytest_matrix(
-    pythons: Iterable[str],
-) -> Generator["MatrixArgs", None, None]:
+def pytest_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for :class:`.Pytest` command.
 
-    :param pythons: Supported Python versions
+    :param pythons: The supported Python versions
     :return: the test matrix
     """
     for pyver, ver in pyvers(pythons):
@@ -315,11 +310,11 @@ class Pytest(Command):
 
 def coveralls_matrix(
     pythons: Iterable[str],
-) -> Generator["MatrixArgs", None, None]:
+) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for :class:`.Coveralls` command.
 
-    :param pythons: Supported Python versions
+    :param pythons: The supported Python versions
     :return: the test matrix
     """
     for pyver, ver in pyvers(pythons):
@@ -365,13 +360,11 @@ class Coveralls(Command):
         session.run(*args)
 
 
-def audit_matrix(
-    pythons: Iterable[str],
-) -> Generator["MatrixArgs", None, None]:
+def audit_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for :class:`.Audit` command.
 
-    :param pythons: Supported Python versions
+    :param pythons: The supported Python versions
     :return: the test matrix
     """
     for pyver, ver in pyvers(pythons):
@@ -405,14 +398,16 @@ class Audit(Command):
             mode="w", suffix=".txt", delete_on_close=False
         ) as fobj:
             fobj.write(
-                session.run(
-                    KW_PYTHON,
-                    "-m",
-                    "pip",
-                    "freeze",
-                    "--all",
-                    silent=True,
-                    log=False,
+                str(
+                    session.run(
+                        KW_PYTHON,
+                        "-m",
+                        "pip",
+                        "freeze",
+                        "--all",
+                        silent=True,
+                        log=False,
+                    )
                 ).strip()
             )
             fobj.close()
@@ -427,11 +422,11 @@ class Audit(Command):
             )
 
 
-def test_matrix(pythons: Iterable[str]) -> Generator["MatrixArgs", None, None]:
+def test_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for :class:`.Test` command.
 
-    :param pythons: Supported Python versions
+    :param pythons: The supported Python versions
     :return: the test matrix
     """
     for pyver, ver in pyvers(pythons):
@@ -464,11 +459,11 @@ class Test(Command):
 
 def uninstall_matrix(
     pythons: Iterable[str],
-) -> Generator["MatrixArgs", None, None]:
+) -> Generator[MatrixArgs, None, None]:
     """
     Create a test matrix for :class:`.Uninstall` command.
 
-    :param pythons: Supported Python versions
+    :param pythons: The supported Python versions
     :return: the test matrix
     """
     for pyver, ver in pyvers(pythons):
@@ -506,13 +501,13 @@ def linter_matrix(
     xtags: Sequence[str] | None = None,
     prereq: Sequence[str] | None = None,
     postreq: Sequence[str] | None = None,
-) -> Generator["MatrixArgs", None, None]:
+) -> Generator[MatrixArgs, None, None]:
     """
     Create the common test matrix for linting commands.
 
-    :param xtags: Extra tags
-    :param prereq: Priority requirements
-    :param postreq: Post requirements
+    :param xtags: The extra tags
+    :param prereq: The priority requirements
+    :param postreq: The post requirements
     :return: the test matrix
     """
     tags = [LINT_TAG, LINT_R_TAG]
@@ -540,7 +535,7 @@ class Linter(Command):
         :param is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
-        with setenv(session, {EV_PYTHONPATH: src_dir()}):
+        with setenv(session, {EV_PYTHONPATH: str(src_dir())}):
             self.lint(session)
 
     def lint(self, session: Session) -> None:
@@ -612,7 +607,7 @@ class Black(Linter):
         session.run(
             "black",
             "--config",
-            self.config(f"{self.name}.toml"),
+            self.config(f"{self.name}.toml") or NO_CONFIGURATION,
             "--check",
             "--diff",
             ".",
@@ -644,14 +639,14 @@ class Isort(Linter):
         session.run(
             "isort",
             "--settings-file",
-            self.config(f".{self.name}.cfg"),
+            self.config(f".{self.name}.cfg") or NO_CONFIGURATION,
             "--diff",
             "-c",
             ".",
         )
 
 
-#: Patched ``flake8`` compatible with ``black`` plus some additional tweaks
+#: Patched Flake8 compatible with Black plus some additional tweaks
 BLACK_COMPAT_FLAKE8 = """
 import functools
 import re
@@ -769,7 +764,7 @@ class Flake8(Linter):
                 KW_PYTHON,
                 fobj.name,
                 "--config",
-                self.config(f".{self.name}.cfg"),
+                self.config(f".{self.name}.cfg") or NO_CONFIGURATION,
             )
 
 
@@ -807,7 +802,7 @@ class Pylint(Linter):
             "pylint",
             *pylint_init_hook(),
             "--rcfile",
-            self.config(f".{self.name}rc.toml"),
+            self.config(f".{self.name}rc.toml") or NO_CONFIGURATION,
             *pylint_extension_pkgs(),
             *dirs,
         )
@@ -858,7 +853,7 @@ class Mypy(Linter):
         session.run(
             "mypy",
             "--config-file",
-            self.config(f".{self.name}.ini"),
+            self.config(f".{self.name}.ini") or NO_CONFIGURATION,
             "-p",
             self.package,
         )

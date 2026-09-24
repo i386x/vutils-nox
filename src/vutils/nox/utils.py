@@ -19,6 +19,7 @@ import re
 import shutil
 import types
 from collections.abc import (
+    Collection,
     Iterable,
     Mapping,
     MutableMapping,
@@ -487,7 +488,7 @@ def integs_dir() -> pathlib.Path:
     return tests_dir() / "integration"
 
 
-def project_dirs(relative: bool = False) -> Iterable[pathlib.Path]:
+def project_dirs(relative: bool = False) -> Collection[pathlib.Path]:
     """
     Get the list of existing project directories.
 

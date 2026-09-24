@@ -11,7 +11,7 @@
 from collections.abc import Iterable, MutableMapping, MutableSequence, Sequence
 
 from mypy.checker import TypeChecker
-from mypy.nodes import TypeInfo
+from mypy.nodes import INVARIANT, TypeInfo
 from mypy.plugin import AnalyzeTypeContext
 from mypy.typeanal import TypeAnalyser
 from mypy.types import (
@@ -22,7 +22,10 @@ from mypy.types import (
     TypeOfAny,
     TypeVarId,
     TypeVarLikeType,
+    TypeVarType,
 )
+
+from vutils.nox.mypy.typing import verify_type
 
 #: Cases requiring special care
 FIX_DECORATOR_TYPE_FUNC = "vutils.nox.mypy.typing.fix_decorator_type"
@@ -40,20 +43,6 @@ MUTABLE_SEQUENCE_TYPE = "typing.MutableSequence"
 OBJECT_TYPE = "builtins.object"
 STR_TYPE = "builtins.str"
 TUPLE_TYPE = "builtins.tuple"
-
-
-def verify_type[T](obj: object, typ: type[T]) -> T:
-    """
-    Verify that :xarg:`obj` is an instance of :xarg:`typ`.
-
-    :param obj: The object
-    :param typ: The expected type
-    :return: the object
-    :raises TypeError: when :xarg:`obj` is not an instance of :xarg:`typ`
-    """
-    if not isinstance(obj, typ):
-        raise TypeError(f"Expected an instance of {typ!r}")
-    return obj
 
 
 def new_object(ctx: AnalyzeTypeContext) -> Type:
@@ -87,10 +76,31 @@ def new_typevar_id(
     )
 
 
+def new_typevar(
+    api: TypeChecker, name: str, tvid: TypeVarId, variance: int = INVARIANT
+) -> TypeVarType:
+    """
+    Create a new type variable.
+
+    :param api: The type checker instance
+    :param name: The type variable name
+    :param tvid: The type variable id
+    :param variance: The type variable variance
+    :return: the new type variable
+    """
+    return TypeVarType(
+        name,
+        f"{api.tscope.current_full_target()}.{name}",
+        tvid,
+        [],
+        api.named_type(OBJECT_TYPE),
+        AnyType(TypeOfAny.from_omitted_generics),
+        variance,
+    )
+
+
 def new_paramspec(
-    api: TypeChecker,
-    name: str,
-    tvid: TypeVarId,
+    api: TypeChecker, name: str, tvid: TypeVarId
 ) -> ParamSpecType:
     """
     Create a new parameters specification.
@@ -167,17 +177,18 @@ class ParamSpec:
         return self.__kwargs
 
 
-class ParamSpecFactory:
-    """The parameter specification factory."""
+class TypeVarLikeTypeFactory:
+    """The type variable and parameter specification factory."""
 
     #: The type checker
     __api: TypeChecker
-    #: The parameter specification name space
+    #: The type variable and parameter specification name space
     __namespace: str
-    #: The list of type variables a new parameter specification will belong to
+    #: The list of type variables a new type variable or parameter
+    #: specification will belong to
     __variables: MutableSequence[TypeVarLikeType]
-    #: The parameter specification storage
-    __storage: MutableMapping[str, ParamSpec]
+    #: The type variable and parameter specification storage
+    __storage: MutableMapping[str, ParamSpec | TypeVarType]
 
     __slots__ = ("__api", "__namespace", "__variables", "__storage")
 
@@ -191,9 +202,10 @@ class ParamSpecFactory:
         Initialize the factory.
 
         :param api: The type checker
-        :param namespace: The parameter specification name space
-        :param variables: The list of type variables a new parameter
-            specification will belong to
+        :param namespace: The type variable and parameter specification name
+            space
+        :param variables: The list of type variables a new type variable or
+            parameter specification will belong to
         """
         self.__api = api
         self.__namespace = namespace
@@ -205,20 +217,42 @@ class ParamSpecFactory:
         """
         Get the list of type variables.
 
-        :return: the list of type variables updated about newly created
-            parameter specifications
+        :return: the list of type variables updated about newly created type
+            variables or parameter specifications
         """
         return self.__variables
 
-    def get(self, name: str) -> ParamSpec:
+    def getv(self, name: str, variance: int = INVARIANT) -> TypeVarType:
+        """
+        Get the type variable or create a new one.
+
+        :param name: The name of the type variable
+        :param variance: The variance of the type variable
+        :return: the type variable
+        :raises TypeError: when :xarg:`name` exists but it is not a type
+            variable
+        """
+        if name in self.__storage:
+            return verify_type(self.__storage[name], TypeVarType)
+        api = self.__api
+
+        tvid = new_typevar_id(self.__variables, self.__namespace)
+        tv = new_typevar(api, name, tvid, variance)
+        self.__variables.append(tv)
+        self.__storage[name] = tv
+        return tv
+
+    def getp(self, name: str) -> ParamSpec:
         """
         Get the parameter specification or create a new one.
 
         :param name: The name of the parameter specification
         :return: the parameter specification
+        :raises TypeError: when :xarg:`name` exists but it is not a parameter
+            specification
         """
         if name in self.__storage:
-            return self.__storage[name]
+            return verify_type(self.__storage[name], ParamSpec)
         api = self.__api
 
         tvid = new_typevar_id(self.__variables, self.__namespace)
