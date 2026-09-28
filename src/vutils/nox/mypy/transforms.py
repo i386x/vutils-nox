@@ -40,12 +40,12 @@ class CaptureType[T: Type, *Ts]:
             raise TypeError("A type has not been captured yet")
         return self.__type
 
-    def __call__(self, t: T, *unused_args: *Ts) -> Type:
+    def __call__(self, t: T, *_args: *Ts) -> Type:
         """
         Capture the type.
 
         :param t: The type to be captured
-        :param unused_args: The rest of action arguments (unused)
+        :param _args: The rest of action arguments (unused)
         :return: :xarg:`t`
         """
         self.__type = t

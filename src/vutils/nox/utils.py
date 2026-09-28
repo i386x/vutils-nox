@@ -20,13 +20,14 @@ import shutil
 import types
 from collections.abc import (
     Collection,
+    Generator,
     Iterable,
     Mapping,
     MutableMapping,
     MutableSequence,
     Sequence,
 )
-from typing import Generator, Literal, TypeIs
+from typing import Literal, TypeIs
 
 from nox.logger import logger
 from nox.sessions import Session
@@ -143,7 +144,7 @@ def is_mutable_mapping[K, V](
     )
 
 
-def data2str(data: object) -> Generator[str, None, None]:
+def data2str(data: object) -> Generator[str]:
     """
     Convert structured data into string.
 
@@ -533,9 +534,7 @@ def envvar_is_unset(session: Session, name: str) -> None:
 
 
 @contextlib.contextmanager
-def setenv(
-    session: Session, env: Mapping[str, str | None]
-) -> Generator[None, None, None]:
+def setenv(session: Session, env: Mapping[str, str | None]) -> Generator[None]:
     """
     Set the environment variables for this context.
 

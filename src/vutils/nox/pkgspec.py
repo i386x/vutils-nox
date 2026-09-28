@@ -591,11 +591,10 @@ class LocalDist:
             kind = self.kind
         if not is_installed(session, name):
             return
-        if kind != KW_ALL:
-            if is_installed_as_editable(session, name) is not (
-                kind == DistKind.EDITABLE
-            ):
-                return
+        if kind != KW_ALL and is_installed_as_editable(session, name) is not (
+            kind == DistKind.EDITABLE
+        ):
+            return
         cmd = ["uv"] if session.venv_backend == "uv" else [KW_PYTHON, "-m"]
         cmd.extend(["pip", "uninstall", "-y", name])
         session.run(*cmd)

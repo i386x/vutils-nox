@@ -23,7 +23,6 @@ classifiers = [
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development",
     "Topic :: Software Development :: Build Tools",
@@ -42,9 +41,8 @@ dependencies = [
     "pyproject-metadata",
     "setuptools",
     "tomli-w",
-    "typing-extensions",
 ]
-requires-python = ">=3.10, <4"
+requires-python = ">=3.14"
 dynamic = ["version"]
 
 [project.optional-dependencies]
@@ -66,3 +64,9 @@ where = ["src"]
 [tool.vutils-nox.sessions.pylint]
 init-hook = "import mypy; import mypy.plugin"
 extension-pkg-allow-list = ["mypy"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["nox"]
+
+[tool.ruff.lint.pyflakes]
+allowed-unused-imports = ["vutils.nox.sessions"]

@@ -78,8 +78,8 @@ Local workflow:
 """
 
 import tempfile
-from collections.abc import Iterable, MutableSequence, Sequence
-from typing import Generator, Unpack
+from collections.abc import Generator, Iterable, MutableSequence, Sequence
+from typing import Unpack
 
 from nox.sessions import Session
 
@@ -105,6 +105,7 @@ from vutils.nox.project import (
     project_pythons,
     pylint_extension_pkgs,
     pylint_init_hook,
+    requires_python,
 )
 from vutils.nox.utils import (
     DANGER_ENV_VARS,
@@ -139,7 +140,7 @@ TESTS_TAG = "tests"
 INSIDE_CI = inside_ci()
 #: All supported Python versions by the project. In CI, this is provided by the
 #: test matrix defined inside CI and hence we pass the empty list here
-ALL_PYTHONS: Iterable[str] = project_pythons() if not INSIDE_CI else []
+ALL_PYTHONS = project_pythons() if not INSIDE_CI else []
 
 #: Common configuration constants
 LINE_LENGTH = 79
@@ -158,7 +159,7 @@ def package_name() -> str:
     return package
 
 
-def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str], None, None]:
+def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str]]:
     """
     Create a generator that yields Python versions pairs.
 
@@ -171,7 +172,7 @@ def pyvers(pythons: Iterable[str]) -> Generator[tuple[str, str], None, None]:
         yield (pyver, pyver.replace(".", ""))
 
 
-def ci_matrix(**exts: Unpack[MatrixArgs]) -> Generator[MatrixArgs, None, None]:
+def ci_matrix(**exts: Unpack[MatrixArgs]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for CI.
 
@@ -194,7 +195,7 @@ class Dummy(Command):
     __slots__ = ()
 
 
-def purge_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
+def purge_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for :class:`.Purge` command.
 
@@ -218,12 +219,12 @@ class Purge(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, is_subcommand: bool = False) -> None:
+    def run(self, session: Session, _is_subcommand: bool = False) -> None:
         """
         Perform the purge.
 
         :param session: The Nox session
-        :param is_subcommand: The flag indicating whether this command is a
+        :param _is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
         rm_dist_dir()
@@ -231,7 +232,7 @@ class Purge(Command):
         upgrade_pip(session)
 
 
-def build_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
+def build_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for :class:`.Build` command.
 
@@ -250,12 +251,12 @@ class Build(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, is_subcommand: bool = False) -> None:
+    def run(self, session: Session, _is_subcommand: bool = False) -> None:
         """
         Perform the package build.
 
         :param session: The Nox session
-        :param is_subcommand: The flag indicating whether this command is a
+        :param _is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
         if not dist_dir().is_dir():
@@ -263,7 +264,7 @@ class Build(Command):
         remove_build_artifacts()
 
 
-def pytest_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
+def pytest_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for :class:`.Pytest` command.
 
@@ -291,12 +292,12 @@ class Pytest(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, is_subcommand: bool = False) -> None:
+    def run(self, session: Session, _is_subcommand: bool = False) -> None:
         """
         Run unit tests.
 
         :param session: The Nox session
-        :param is_subcommand: The flag indicating whether this command is a
+        :param _is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
         session.run(
@@ -308,9 +309,7 @@ class Pytest(Command):
         )
 
 
-def coveralls_matrix(
-    pythons: Iterable[str],
-) -> Generator[MatrixArgs, None, None]:
+def coveralls_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for :class:`.Coveralls` command.
 
@@ -337,12 +336,12 @@ class Coveralls(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, is_subcommand: bool = False) -> None:
+    def run(self, session: Session, _is_subcommand: bool = False) -> None:
         """
         Report code coverage.
 
         :param session: The Nox session
-        :param is_subcommand: The flag indicating whether this command is a
+        :param _is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
         coveragerc = self.config(".coveragerc")
@@ -360,7 +359,7 @@ class Coveralls(Command):
         session.run(*args)
 
 
-def audit_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
+def audit_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for :class:`.Audit` command.
 
@@ -385,12 +384,12 @@ class Audit(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, is_subcommand: bool = False) -> None:
+    def run(self, session: Session, _is_subcommand: bool = False) -> None:
         """
         Perform the audit.
 
         :param session: The Nox session
-        :param is_subcommand: The flag indicating whether this command is a
+        :param _is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
         session.run(KW_PYTHON, "-m", "pip_audit", "--progress-spinner", "off")
@@ -422,7 +421,7 @@ class Audit(Command):
             )
 
 
-def test_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs, None, None]:
+def test_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for :class:`.Test` command.
 
@@ -457,9 +456,7 @@ class Test(Command):
     __slots__ = ()
 
 
-def uninstall_matrix(
-    pythons: Iterable[str],
-) -> Generator[MatrixArgs, None, None]:
+def uninstall_matrix(pythons: Iterable[str]) -> Generator[MatrixArgs]:
     """
     Create a test matrix for :class:`.Uninstall` command.
 
@@ -485,12 +482,12 @@ class Uninstall(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, is_subcommand: bool = False) -> None:
+    def run(self, session: Session, _is_subcommand: bool = False) -> None:
         """
         Perform the uninstall operation.
 
         :param session: The Nox session
-        :param is_subcommand: The flag indicating whether this command is a
+        :param _is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
         with setenv(session, DANGER_ENV_VARS):
@@ -501,7 +498,7 @@ def linter_matrix(
     xtags: Sequence[str] | None = None,
     prereq: Sequence[str] | None = None,
     postreq: Sequence[str] | None = None,
-) -> Generator[MatrixArgs, None, None]:
+) -> Generator[MatrixArgs]:
     """
     Create the common test matrix for linting commands.
 
@@ -527,12 +524,12 @@ class Linter(Command):
 
     __slots__ = ()
 
-    def run(self, session: Session, is_subcommand: bool = False) -> None:
+    def run(self, session: Session, _is_subcommand: bool = False) -> None:
         """
         Perform the linting operation.
 
         :param session: The Nox session
-        :param is_subcommand: The flag indicating whether this command is a
+        :param _is_subcommand: The flag indicating whether this command is a
             subcommand or not
         """
         with setenv(session, {EV_PYTHONPATH: str(src_dir())}):
@@ -659,8 +656,8 @@ _orig_find_noqa = flake8.violation._find_noqa
 def _is_class(line: str) -> bool:
     line = line.strip()
     if line == "): ...":
-        # This can also match also an unannotated function but we are taking
-        # care of these in `mypy` settings
+        # This can also match an unannotated function but we are taking care of
+        # these in mypy settings
         return True
     return line.startswith("class ") and line.endswith(": ...")
 
@@ -713,9 +710,9 @@ if __name__ == "__main__":
 @cfg(
     "flake8",
     {
-        "filename": "*.py,*.pyi,*.pyw",
-        "select": "E,F,W,C,L,Y,I",
-        "enable-extensions": "L,Y,I",
+        "filename": "*.py,*.pyw",
+        "select": "E,F,W,C,L,I",
+        "enable-extensions": "L,I",
         "max-line-length": LINE_LENGTH,
         "max-doc-length": LINE_LENGTH,
         # Disable not PEP 8 compliant warnings:
@@ -724,15 +721,6 @@ if __name__ == "__main__":
         # Disable warnings conflicting with black:
         #   E302 expected 2 blank lines, found 0
         "extend-ignore": "E203,E302,W503",
-        # Disable warnings conflicting with other linters:
-        #   E301 expected 1 blank line, found 0
-        #        - disabled for type stubs as `black` demands no blank lines
-        #          between method stubs
-        #   E305 expected 2 blank lines after class or function definition,
-        #        found 1
-        #        - disabled for type stubs as `black` demands 1 blank line
-        #          after class or function definitions
-        "per-file-ignores": "*.pyi:E301,E305",
         "show-source": True,
         "statistics": True,
         "doctests": True,
@@ -741,7 +729,6 @@ if __name__ == "__main__":
     },
 )
 @dep("flake8-requirements")
-@dep("flake8-pyi")
 @dep("flake8-logging")
 @dep("flake8")
 class Flake8(Linter):
@@ -775,12 +762,12 @@ class Flake8(Linter):
     {
         "enable": ["useless-suppression"],
         # Mypy does the better job
-        "disable": ["no-member"],
+        "disable": ["no-member", "not-an-iterable"],
     },
 )
 @cfg("tool::pylint::format::max-line-length", LINE_LENGTH)
 @cfg("tool::pylint::design::min-public-methods", 0)
-@cfg("tool::pylint::main::ignore-patterns", ["^\\.#", "\\.pyi$"])
+@cfg("tool::pylint::main::ignore-patterns", ["^\\.#"])
 @dep("%pyproject")
 @dep("pytest")
 @dep("pylint")
@@ -857,3 +844,88 @@ class Mypy(Linter):
             "-p",
             self.package,
         )
+
+
+@add(matrix=linter_matrix(), reuse_venv=True, default=True)
+@dep("bandit")
+class Bandit(Linter):
+    """Run security analyzer."""
+
+    __slots__ = ()
+
+    def lint(self, session: Session) -> None:
+        """
+        Perform security analysis.
+
+        :param session: The Nox session
+        """
+        dirs = project_dirs(relative=True)
+        if len(dirs) == 0:
+            return
+        session.run("bandit", "-vlir", *dirs)
+
+
+@add(matrix=linter_matrix(), reuse_venv=True, default=True)
+@cfg(
+    "lint",
+    {
+        "extend-select": [
+            "LOG",
+            "G",
+            "INP",
+            "Q",
+            "RSE",
+            "RET",
+            "SLOT",
+            "ARG",
+            "PTH",
+            "FLY",
+            "N",
+            "E",
+            "W",
+            "D",
+        ],
+        "ignore": [
+            # Do not allow a blank line between class definition and the doc
+            # string
+            "D203",
+            # Do not allow `"""Doc string ...`-like summaries in multi-line doc
+            # strings. Prefer
+            #
+            #   """
+            #   Doc string ...
+            #
+            #   ...
+            #   """
+            #
+            # instead
+            "D212",
+            # Ignore unsorted slots (order of slots follows order of member
+            # attributes)
+            "RUF023",
+        ],
+    },
+)
+@cfg("target-version", f"py{requires_python()[1]}")
+@cfg("line-length", LINE_LENGTH)
+@cfg("extend-include", ["*.pyw"])
+@cfg("extend", "../../pyproject.toml")
+@dep("ruff")
+class Ruff(Linter):
+    """Run Ruff linter."""
+
+    __slots__ = ()
+
+    def lint(self, session: Session) -> None:
+        """
+        Perform additional checks provided by Ruff.
+
+        :param session: The Nox session
+        """
+        common_args = (
+            "--no-cache",
+            "--config",
+            self.config(f".{self.name}.toml") or NO_CONFIGURATION,
+        )
+        session.run("ruff", "format", "--diff", *common_args)
+        session.run("ruff", "check", *common_args)

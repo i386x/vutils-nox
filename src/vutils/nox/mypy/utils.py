@@ -284,4 +284,4 @@ def is_subtype_of(t: TypeInfo, fullname: str) -> bool:
 
     The test is based on the MRO of :xarg:`t`.
     """
-    return fullname in set(tt.fullname for tt in t.mro)
+    return fullname in {tt.fullname for tt in t.mro}

@@ -11,8 +11,14 @@
 import configparser
 import hashlib
 import pathlib
-from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence
-from typing import TYPE_CHECKING, Annotated, Generator, Literal, TypeIs
+from collections.abc import (
+    Generator,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+)
+from typing import TYPE_CHECKING, Annotated, Literal, TypeIs
 
 from nox.logger import logger
 from nox.sessions import Session
@@ -35,8 +41,8 @@ if TYPE_CHECKING:
 #: Type aliases
 type ConfType = Mapping[str, object]
 type MutConfType = MutableMapping[str, object]
-type RawConfType = Mapping[str, ConfType]
-type MutRawConfType = MutableMapping[str, MutConfType]
+type IniConfType = Mapping[str, ConfType]
+type MutIniConfType = MutableMapping[str, MutConfType]
 type DepsType = Mapping[str, PkgSpecType]
 type MutDepsType = MutableMapping[str, PkgSpecType]
 
@@ -240,7 +246,7 @@ class Container[T]:
         self.__checksum = None
         self.checksum()
 
-    def items(self) -> Generator[str, None, None]:
+    def items(self) -> Generator[str]:
         """
         Yield items needed to compute the container data checksum.
 
@@ -390,7 +396,7 @@ class Dependencies(Container[PkgSpecType]):
                     self.__install_args.append(pkg)
         super().commit()
 
-    def items(self) -> Generator[str, None, None]:
+    def items(self) -> Generator[str]:
         """
         Yield install arguments.
 
@@ -427,13 +433,13 @@ class Dependencies(Container[PkgSpecType]):
                 session.install(*self.__install_args, silent=False)
 
 
-def is_config_data(data: ConfType) -> TypeIs[RawConfType]:
+def is_iniconf_data(data: ConfType) -> TypeIs[IniConfType]:
     """
-    Narrow the type of :xarg:`data` to :type:`.RawConfType`.
+    Narrow the type of :xarg:`data` to :type:`.IniConfType`.
 
     :param data: The configuration data
     :return: :obj:`True` if :xarg:`data` can be narrowed to
-        :type:`.RawConfType`
+        :type:`.IniConfType`
     """
     return all(is_mapping(data[key], str, object) for key in data)
 
@@ -460,7 +466,7 @@ class Configuration(Container[object]):
         """
         mergeinsert(self.__data, item, name)
 
-    def items(self) -> Generator[str, None, None]:
+    def items(self) -> Generator[str]:
         """
         Yield configuration converted to :class:`str`.
 
@@ -483,15 +489,14 @@ class Configuration(Container[object]):
         file.
         """
         suffix = path.suffix
-        data = self.__data
-        if not is_config_data(data):
-            raise ValueError("The configuration data are lacking sections")
         if suffix == ".toml":
             with path.open("wb") as fobj:
-                toml_dump(data, fobj)
+                toml_dump(self.__data, fobj)
         elif suffix in (".cfg", ".ini") or path.name.endswith("rc"):
+            if not is_iniconf_data(self.__data):
+                raise ValueError("The configuration data are lacking sections")
             parser = configparser.ConfigParser()
-            parser.read_dict(data)
+            parser.read_dict(self.__data)
             with path.open("w") as fobj:
                 parser.write(fobj)
         else:

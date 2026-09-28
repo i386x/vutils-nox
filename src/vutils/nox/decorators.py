@@ -8,16 +8,8 @@
 #
 """Decorators."""
 
-from collections.abc import Collection, Iterable, Sequence
-from typing import (
-    Callable,
-    Generator,
-    Literal,
-    TypedDict,
-    TypeGuard,
-    TypeIs,
-    Unpack,
-)
+from collections.abc import Callable, Collection, Generator, Iterable, Sequence
+from typing import Literal, TypedDict, TypeGuard, TypeIs, Unpack
 
 from nox._typing import Python
 from nox.registry import session_decorator
@@ -328,6 +320,9 @@ def __combine[T: (CommandArgs, SessionArgs)](
         if __is_matrix_command_kwarg(key) and __is_command_kwargs(
             new_kwargs, allowed
         ):
+            # `if` arms cannot be collapsed together because there is not way
+            # how to tell mypy that some combinations of `typed dict` and `key`
+            # are not possible (sanitized)
             new_kwargs[key] = other[key]
         elif __is_matrix_session_kwarg(key) and __is_session_kwargs(
             new_kwargs, allowed
@@ -566,9 +561,7 @@ def __dep(command: type[Command], depname: str, spec: str | None) -> None:
     command.DEFS[KW_DEPS][pkg_name] = pkg_spec
 
 
-def __dep_special(
-    depname: str, cmdname: str
-) -> Generator[tuple[str, str], None, None]:
+def __dep_special(depname: str, cmdname: str) -> Generator[tuple[str, str]]:
     """
     Handle the special dependency cases.
 

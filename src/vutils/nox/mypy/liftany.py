@@ -10,9 +10,7 @@
 
 import functools
 import re
-import sys
-from collections.abc import Sequence
-from typing import Callable
+from collections.abc import Callable, Sequence
 
 from mypy.checker import TypeChecker
 from mypy.nodes import ARG_POS, ARG_STAR, ARG_STAR2, TypeAlias
@@ -489,21 +487,17 @@ def adjust_inspect_signature(ctx: FunctionSigContext) -> FunctionLike:
     elif not isinstance(tt, CallableType):
         return sig
     arg = Arg()
-    xargs = [arg, arg, arg, arg]
-    if sys.version_info >= (3, 14):
-        xargs.append(arg)
+    xargs = [arg, arg, arg, arg, arg]
 
     def replace(
-        unused_tt: TypeAliasType,
-        unused_alias: TypeAlias | None,
-        unused_args: Sequence[Type],
+        _tt: TypeAliasType, _alias: TypeAlias | None, _args: Sequence[Type]
     ) -> Type:
         """
         Replace a type alias type with the deduced proper callable type.
 
-        :param unused_tt: The type alias type
-        :param unused_alias: The type alias
-        :param unused_args: The arguments of type alias type
+        :param _tt: The type alias type
+        :param _alias: The type alias
+        :param _args: The arguments of type alias type
         :return: the deduced proper type that replaces :xarg:`unused_tt`
         """
         return tt
@@ -604,15 +598,15 @@ def adjust_return_email_header_decode_header(ctx: FunctionContext) -> Type:
 
     def to_str_or_bytes(
         t: Instance,
-        unused_args: Sequence[Type],
-        unused_last_known_value: LiteralType | None,
+        _args: Sequence[Type],
+        _last_known_value: LiteralType | None,
     ) -> Type:
         """
         Replace :xarg:`t` with ``str | bytes``.
 
         :param t: The instance type
-        :param unused_args: The instance type arguments
-        :param unused_last_known_value: The instance type *last known value*
+        :param _args: The instance type arguments
+        :param _last_known_value: The instance type *last known value*
         :return: the ``str | bytes`` type
         """
         return UnionType(
@@ -622,16 +616,16 @@ def adjust_return_email_header_decode_header(ctx: FunctionContext) -> Type:
         )
 
     def to_str(
-        unused_t: Instance,
-        unused_args: Sequence[Type],
-        unused_last_known_value: LiteralType | None,
+        _t: Instance,
+        _args: Sequence[Type],
+        _last_known_value: LiteralType | None,
     ) -> Type:
         """
         Replace :xarg:`unused_t` with :class:`str`.
 
-        :param unused_t: The instance type
-        :param unused_args: The instance type arguments
-        :param unused_last_known_value: The instance type *last known value*
+        :param _t: The instance type
+        :param _args: The instance type arguments
+        :param _last_known_value: The instance type *last known value*
         :return: the :class:`str` type
         """
         return api.named_type(STR_TYPE)
@@ -661,17 +655,17 @@ def adjust_nox_registry_session_decorator(ctx: FunctionContext) -> Type:
 
     def modify(
         t: CallableType,
-        unused_arg_types: Sequence[Type],
-        unused_ret_type: Type,
-        unused_variables: Sequence[TypeVarLikeType],
+        _arg_types: Sequence[Type],
+        _ret_type: Type,
+        _variables: Sequence[TypeVarLikeType],
     ) -> Type:
         """
         Modify a callable.
 
         :param t: The callable
-        :param unused_arg_types: The list of argument type of the callable
-        :param unused_ret_type: The return type of the callable
-        :param unused_variables: The list of type variables of the callable
+        :param _arg_types: The list of argument type of the callable
+        :param _ret_type: The return type of the callable
+        :param _variables: The list of type variables of the callable
         :return: the modified callable
         """
         object_type = api.named_type(OBJECT_TYPE)
@@ -819,11 +813,11 @@ class LiftAnyPlugin(Plugin):
         }.get(fullname)
 
 
-def plugin(unused_version: str) -> type[Plugin]:
+def plugin(_version: str) -> type[Plugin]:
     """
     Return the plugin.
 
-    :param unused_version: The version of mypy
+    :param _version: The version of mypy
     :return: the plugin
     """
     return LiftAnyPlugin

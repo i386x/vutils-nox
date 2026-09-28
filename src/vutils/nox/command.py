@@ -13,10 +13,15 @@ import functools
 import inspect
 import optparse
 import pathlib
-from collections.abc import Callable, Iterable, MutableMapping, MutableSequence
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    MutableMapping,
+    MutableSequence,
+)
 from typing import (
     ClassVar,
-    Generator,
     Literal,
     Never,
     TypedDict,
@@ -99,7 +104,7 @@ def is_simple_action(action: ActionType) -> TypeIs[Callable[[Session], None]]:
 
 def normalize_actions(
     actions: Iterable[ActionType | str],
-) -> Generator[ActionType, None, None]:
+) -> Generator[ActionType]:
     """
     Normalize actions.
 
@@ -700,7 +705,7 @@ class Command:
     @contextlib.contextmanager
     def context(
         self, session: Session, is_subcommand: bool
-    ) -> Generator[None, None, None]:
+    ) -> Generator[None]:
         """
         Create a context for running commands.
 

@@ -63,9 +63,12 @@ def check[T: Type](t: Type, tt: type[T], fullname: str | None = None) -> T:
     """
     if not isinstance(t, tt):
         raise TypeMatchError(f"Expected `{tt!r}` type")
-    if isinstance(t, Instance):
-        if fullname is not None and t.type.fullname != fullname:
-            raise TypeMatchError(f"Expected `Instance({fullname})`")
+    if (
+        isinstance(t, Instance)
+        and fullname is not None
+        and t.type.fullname != fullname
+    ):
+        raise TypeMatchError(f"Expected `Instance({fullname})`")
     return t
 
 
@@ -375,17 +378,15 @@ class Arg:
             based on :xarg:`typ` returned by the user-defined action
         :raises .TypeMatchError: on an unsuccessful match
         """
-        if self.kind is not None:
-            if kind != self.kind:
-                raise TypeMatchError("Argument kind mismatch")
-        if self.name is not None:
-            if (
-                name is None
-                and self.name != ""
-                or name is not None
-                and name != self.name
-            ):
-                raise TypeMatchError("Argument name mismatch")
+        if self.kind is not None and kind != self.kind:
+            raise TypeMatchError("Argument kind mismatch")
+        if self.name is not None and (
+            name is None
+            and self.name != ""
+            or name is not None
+            and name != self.name
+        ):
+            raise TypeMatchError("Argument name mismatch")
         if self.typ:
             return self.typ.match(typ)
         return typ
@@ -671,9 +672,8 @@ class TypeVarTypePattern(Pattern[Type]):
             and self.action is None
         ):
             return tt
-        if self.fullname is not None:
-            if tt.fullname != self.fullname:
-                raise TypeMatchError("Full name mismatch")
+        if self.fullname is not None and tt.fullname != self.fullname:
+            raise TypeMatchError("Full name mismatch")
         upper_bound = (
             self.upper_bound.match(tt.upper_bound)
             if self.upper_bound
@@ -759,9 +759,8 @@ class TypeAliasTypePattern(Pattern[Type]):
         ):
             raise TypeMatchError("Missing alias")
         if alias:
-            if self.fullname is not None:
-                if alias.fullname != self.fullname:
-                    raise TypeMatchError("Full name mismatch")
+            if self.fullname is not None and alias.fullname != self.fullname:
+                raise TypeMatchError("Full name mismatch")
             target = (
                 self.target.match(alias.target)
                 if self.target

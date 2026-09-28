@@ -76,5 +76,5 @@ def patch_nox(old: object, new: object) -> None:
 
 
 def setup() -> None:
-    """Setup the Nox to be ``vutils-nox`` ready."""
+    """Set up the Nox to be ``vutils-nox`` ready."""
     patch_nox(NoxSessionRunner, SessionRunner)

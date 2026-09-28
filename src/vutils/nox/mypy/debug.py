@@ -290,16 +290,13 @@ def print_var_node(
 
 
 def print_name_expr_node(
-    node: NameExpr,
-    unused_visited: Visited,
-    indent: int = 0,
-    trailer: str = "",
+    node: NameExpr, _visited: Visited, indent: int = 0, trailer: str = ""
 ) -> None:
     """
     Print a :class:`mypy.nodes.NameExpr` node.
 
     :param node: The node
-    :param unused_visited: The registry tracking visited objects
+    :param _visited: The registry tracking visited objects
     :param indent: The indentation level
     :param trailer: The trailing characters to be printed
     """
@@ -357,19 +354,34 @@ def print_node(
         )
         return
     visited.add(node)
+    __do_print_node(node, visited, indent, trailer)
 
-    if isinstance(node, FuncDef):
-        print_funcdef_node(node, visited, indent, trailer)
-    elif isinstance(node, Decorator):
-        print_decorator_node(node, visited, indent, trailer)
-    elif isinstance(node, Var):
-        print_var_node(node, visited, indent, trailer)
-    elif isinstance(node, NameExpr):
-        print_name_expr_node(node, visited, indent, trailer)
-    elif isinstance(node, TypeAlias):
-        print_typealias_node(node, visited, indent, trailer)
-    else:
-        raise TypeError(f"Unknown node: {node.__class__.__name__}")
+
+def __do_print_node(
+    node: Node, visited: Visited, indent: int, trailer: str
+) -> None:
+    """
+    Do *print a node* itself.
+
+    :param node: The node
+    :param visited: The registry tracking visited objects
+    :param indent: The indentation level
+    :param trailer: The trailing characters to be printed
+    :raises TypeError: when an unknown node is tried to be printed
+    """
+    match node:
+        case FuncDef():
+            print_funcdef_node(node, visited, indent, trailer)
+        case Decorator():
+            print_decorator_node(node, visited, indent, trailer)
+        case Var():
+            print_var_node(node, visited, indent, trailer)
+        case NameExpr():
+            print_name_expr_node(node, visited, indent, trailer)
+        case TypeAlias():
+            print_typealias_node(node, visited, indent, trailer)
+        case _:
+            raise TypeError(f"Unknown node: {node.__class__.__name__}")
 
 
 def print_typealias_type(
@@ -714,26 +726,41 @@ def print_type(
         )
         return
     visited.add(t)
+    __do_print_type(t, visited, indent, trailer)
 
-    if isinstance(t, TypeAliasType):
-        print_typealias_type(t, visited, indent, trailer)
-    elif isinstance(t, TypeVarType):
-        print_typevar_type(t, visited, indent, trailer)
-    elif isinstance(t, ParamSpecType):
-        print_paramspec_type(t, visited, indent, trailer)
-    elif isinstance(t, AnyType):
-        print_any_type(t, visited, indent, trailer)
-    elif isinstance(t, NoneType):
-        print_none_type(t, visited, indent, trailer)
-    elif isinstance(t, Instance):
-        print_instance_type(t, visited, indent, trailer)
-    elif isinstance(t, CallableType):
-        print_callable_type(t, visited, indent, trailer)
-    elif isinstance(t, TupleType):
-        print_tuple_type(t, visited, indent, trailer)
-    elif isinstance(t, LiteralType):
-        print_literal_type(t, visited, indent, trailer)
-    elif isinstance(t, UnionType):
-        print_union_type(t, visited, indent, trailer)
-    else:
-        raise TypeError(f"Unknown type: {t.__class__.__name__}")
+
+def __do_print_type(
+    t: Type, visited: Visited, indent: int, trailer: str
+) -> None:
+    """
+    Do *print a type* itself.
+
+    :param t: The type
+    :param visited: The registry tracking visited objects
+    :param indent: The indentation level
+    :param trailer: The trailing characters to be printed
+    :raises TypeError: when an unknown type is tried to be printed
+    """
+    match t:
+        case TypeAliasType():
+            print_typealias_type(t, visited, indent, trailer)
+        case TypeVarType():
+            print_typevar_type(t, visited, indent, trailer)
+        case ParamSpecType():
+            print_paramspec_type(t, visited, indent, trailer)
+        case AnyType():
+            print_any_type(t, visited, indent, trailer)
+        case NoneType():
+            print_none_type(t, visited, indent, trailer)
+        case Instance():
+            print_instance_type(t, visited, indent, trailer)
+        case CallableType():
+            print_callable_type(t, visited, indent, trailer)
+        case TupleType():
+            print_tuple_type(t, visited, indent, trailer)
+        case LiteralType():
+            print_literal_type(t, visited, indent, trailer)
+        case UnionType():
+            print_union_type(t, visited, indent, trailer)
+        case _:
+            raise TypeError(f"Unknown type: {t.__class__.__name__}")

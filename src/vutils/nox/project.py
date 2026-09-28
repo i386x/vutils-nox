@@ -66,6 +66,9 @@ class PyProjectProject(BaseModel):
         str,
         StringConstraints(strip_whitespace=True, min_length=1),
     ] = "0.0.0"
+    classifiers: Sequence[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    ]
     dependencies: Sequence[
         Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     ]
@@ -122,7 +125,7 @@ class PyProjectDynamic(BaseModel):
         """
         if self.version is None:
             return self
-        for key in self.version.keys():
+        for key in self.version:
             if key not in (ATTR_KEY, FILE_KEY):
                 raise ValueError(
                     f"Expected {ATTR_KEY} or {FILE_KEY}, found {key}"
@@ -402,7 +405,7 @@ def project_name() -> str:
 
 
 @fix_decorator_type(functools.cache)
-def project_pythons() -> Iterable[str]:
+def project_pythons() -> Sequence[str]:
     """
     Return the list of Python versions supported by the project.
 
@@ -413,6 +416,23 @@ def project_pythons() -> Iterable[str]:
         for classifier in get_metadata(load_pyproject()).classifiers
         if classifier.startswith("Programming Language :: Python :: 3.")
     ]
+
+
+@fix_decorator_type(functools.cache)
+def requires_python() -> tuple[str, str]:
+    """
+    Return the minimal Python version required.
+
+    :return: the minimal Python version required in form ``("<major>.<minor>",
+        "<major><minor>")``
+    :raises ValueError: when there are no supported Python versions specified
+        in the ``project.classifiers`` list of the ``pyproject.toml`` file
+    """
+    pythons = project_pythons()
+    if not pythons:
+        raise ValueError("No supported Python versions specified")
+    pyver = pythons[0]
+    return (pyver, pyver.replace(".", ""))
 
 
 @fix_decorator_type(functools.cache)
