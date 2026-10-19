@@ -8,7 +8,15 @@ on:
       - published
 
 jobs:
-  call-deploy:
-    uses: ./.github/workflows/deploy-workflow.yml
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Build the package
+        uses: $/.github/actions/build
+
+      - name: Deploy the package
+        uses: pypa/gh-action-pypi-publish@release/v1
+
     permissions:
       id-token: write
