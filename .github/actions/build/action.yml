@@ -1,0 +1,25 @@
+---
+
+name: Build
+description: Build a Python 3.x package
+
+runs:
+  using: composite
+
+  steps:
+    - name: Checkout the project
+      uses: actions/checkout@v7
+
+    - name: Setup Python 3.x
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.x'
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install build
+
+    - name: Build the package
+      run: |
+        python -m build
