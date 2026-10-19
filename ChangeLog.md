@@ -1,5 +1,5 @@
 # Change Log
 
-## 0.0.0
+## 0.0.1
 
-* First release
+* First release (pre-alpha)
